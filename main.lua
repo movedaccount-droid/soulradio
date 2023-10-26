@@ -1,3 +1,5 @@
+require "uridecoder"
+
 -- run with ctrl+shift+b
 -- install rocks with luarocks in console
 
@@ -6,11 +8,64 @@
 -- http made really easy, https://www.jmarshall.com/easy/http/
 -- http rfc, https://datatracker.ietf.org/doc/html/rfc9112#line.folding
 
+function reconstruct_target_uri(request_target, fixed_uri_scheme)
+  -- determine type of request_target and validate
+  -- TODO: add 500 bad request returns
+  local request_type
+  local UNRESERVED <const> = "a-zA-Z0-9%-%.%_%~"
+  local SUB_DELIMS <const> = "%!%$%&%'%(%)%*%+%,%;%="
+  local PCT_ENCODED <const> = "%[0-9a-fA-F][0-9a-fA-F]"
+  local PCHAR <const> = UNRESERVED .. SUB_DELIMS .. "%:%@"
+  
+  if request_target == "*" then request_type = "asterisk-form"
+  elseif request_target:sub(1,1) == "/" then
+    -- validate for origin-form
+    if request_target:sub(2,1):gmatch(PCHAR) == nil then end
+    for c in request_target:sub(2,1):gmatch(".") do
+      if c:gmatch(PCHAR .. "/") == nil then end
+    end
+    request_type = "origin-form"
+  elseif request_target:gmatch(":/") == nil then
+    -- validate for authority-form
+
+    request_type = "authority-form"
+  else request_type = "absolute-form"
+  end
+end
+
+reconstruct_target_uri("https://www.rfc-editor.org/rfc/rfc3986#section-2.3")
+
+  local target_uri, scheme
+  -- if request target is in absolute then target_uri = request_target
+  -- else
+    -- scheme (https:// etc.)
+    if fixed_uri_scheme ~= nil then scheme = fixed_uri_scheme
+    -- we do not support https, no need for further checks
+    else scheme = "http" end
+
+    -- authority component (www.example.com)
+
+  -- end
+-- end
+
+function is_whitespace(character_to_check)
+  -- RTAB or space
+  print("given character '" .. character_to_check .. "' returned " .. tostring(character_to_check == " " or character_to_check == "	"))
+  return character_to_check == " " or character_to_check == "	"
+end
+
+function receive_sanitized(client, receive_argument)
+  -- sanitizes bare cr to sp
+  local line, err = client:receive(receive_argument)
+  if not err then line = line:gsub("\r(?!\n)"," ") end
+  return line, err
+end
+
 function parse_start_line(start_line)
   -- parse the first line of a http request (2.3-3.1)
   -- contains method, target and protocol, space separated
   -- see https://stackoverflow.com/questions/1426954/split-string-in-lua
-  tokens = string.gmatch(start_line,"[^%s]+")
+  tokens = string.gmatch(start_line,"[^ \t]+")
   return tokens(), tokens(), tokens()
 end
 
@@ -21,23 +76,25 @@ function parse_field_line(field_line, table_to_append_to)
   -- TODO: handle malformed field line with generic error
   -- TODO: A server MUST reject, with a response status code of 400 (Bad Request), any received request message that contains whitespace between a header field name and colon
   -- TODO: reject folded field lines with 400 (5.2)
-  local start_index, end_index = string.find(field_line,":%s?")
-  local field_name = string.sub(field_line, 1, start_index - 1)
-  local field_value = string.sub(field_line, end_index + 1, -1)
+  local field_name_end, field_value_start = string.find(field_line,":[ \t]*")
+  local field_value_end = string.find(field_line, "[ \t]*$")
+  local field_name = string.sub(field_line, 1, field_name_end - 1)
+  local field_value = string.sub(field_line, field_value_start + 1, field_value_end - 1)
   table_to_append_to[field_name] = field_value
   return table_to_append_to
 end
 
-function read_field_lines_until_crlf(client)
+function read_field_lines_until_crlf(client, disallow_leading_whitespace)
   -- unfold and parse field lines until empty line
   -- check if end of field lines and parse buffer if true
   -- else handle exception for first line, then handle unfolding and new field line case.
   -- TODO: folded headers are untested. set up a test case for this
   local field_lines = {}
-  local field_name, field_value
-  local buffer
+  local field_name, field_value, buffer, line, err
+  -- get first line
   while 1 do
-    line, err = client:receive()
+    line, err = receive_sanitized(client)
+    local first_char = line:sub(1, 1)
     if not err then
       if line == "" then
         if buffer ~= nil then
@@ -45,8 +102,12 @@ function read_field_lines_until_crlf(client)
           field_lines[field_name] = field_value
         end
         break
-      elseif buffer == nil then buffer = line
-      elseif line[1] == " " then buffer = buffer .. line
+      elseif buffer == nil then
+        if disallow_leading_whitespace == true then
+          -- disallow leading whitespace on first header line
+          if not is_whitespace(first_char) then buffer = line end
+        else buffer = line end
+      elseif is_whitespace(first_char) then buffer = buffer .. line
       else
         field_name, field_value = parse_field_line(buffer, field_lines)
         field_lines[field_name] = field_value
@@ -122,7 +183,6 @@ end
 
 -- NOT IMPLEMENTED: 101 Switching Protocols
 -- no other protocols are planned for implementation, so we can ignore all Upgrade headers and continue
-
 
 function respond_with_200(client, file, metadata)
   -- OK
@@ -230,7 +290,7 @@ while 1 do
       goto start
     else
       -- read the incoming line
-      line, err = connection:receive()
+      line, err = receive_sanitized(connection)
       if not err then
         -- we have a start line, move on
         -- TODO: functionise everything after this point so our flow is less fucked and we can handle all incoming data in a row
@@ -244,12 +304,16 @@ while 1 do
   -- if we don't have a line, go back
   -- this will be less dumb after refactor
   if line == nil then goto start end
+  print(line)
 
   -- logging
   packet_num = packet_num + 1
   print("-------[PACKET " .. packet_num .. " BEGINS]-------")
 
   -- process the line we just got
+  -- skip arbitrary number of crlf
+  -- TODO: limit this so a client can't hold up the server forever with unlimited crlf
+  while line == "" do line = receive_sanitized(client) end
   local method_token, request_target, protocol_version
   if not err then
     method_token, request_target, protocol_version = parse_start_line(line)
@@ -261,7 +325,7 @@ while 1 do
 
 
   -- unfold and parse field lines until empty line for end of headers
-  local headers = read_field_lines_until_crlf(client)
+  local headers = read_field_lines_until_crlf(client, true)
 
   -- log headers
   print("-------[DUMPED HEADERS]-------")
@@ -299,7 +363,7 @@ while 1 do
     -- read chunks
     body = ""
     body_length = 0
-    local chunk_header, err = client:receive()
+    local chunk_header, err = receive_sanitized(client)
     local tokens = string.gmatch(chunk_header,"[^%s]+")
     local chunk_size, chunk_ext = tonumber(tokens()), tokens()
     while chunk_size > 0 do
@@ -310,7 +374,7 @@ while 1 do
       print("chunk handled: " .. string.sub(chunk_data,1,-3))
       print("body: " .. body)
       body_length = body_length + chunk_size
-      chunk_header, err = client:receive()
+      chunk_header, err = receive_sanitized(client)
       print("header: " .. chunk_header)
       tokens = string.gmatch(chunk_header,"[^%s]+")
       chunk_size, chunk_ext = tokens(), tokens()
