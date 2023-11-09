@@ -130,6 +130,13 @@ local first_line, headers, body, output = get_client_response(client)
 assert(string.find(body, "nospace: success") ~= nil and string.find(body, "onespace: success") ~= nil and string.find(body, "twospace: success") ~= nil and string.find(body, "tab: success") ~= nil and string.find(body, "mixed: success") ~= nil and first_line["response_code"] == 200, build_failure_message(test_message, output))
 print("PASSED: " .. test_message)
 
+-- test_message = "6.1: A server that receives a request message with a transfer coding it does not understand SHOULD respond with 501 (Not Implemented)."
+-- test_request = "GET /test.html HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: gzip, chunked\r\n\r\n"
+-- client:send(test_request)
+-- local first_line, headers, body, output = get_client_response(client)
+-- assert(first_line["response_code"] == 501, build_failure_message(test_message, output))
+-- print("PASSED: " .. test_message)
+
 test_message = "7.1: A recipient MUST be able to parse and decode the chunked transfer coding."
 test_request = "GET /test.html HTTP/1.1\r\nTransfer-Encoding: chunked\r\nHost: localhost\r\n\r\n5\r\nhello\r\n7\r\n server\r\n0\r\nExpires: Sat, 27 Mar 2004 21:12:00 GMT\r\n\r\n"
 client:send(test_request)

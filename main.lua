@@ -12,7 +12,7 @@ local FIELD_VCHAR <const> = "[" .. VCHAR .. OBS_TEXT .. "]"
 -- all headers MUST be able to be parsed as a list.
 -- however, resolving lists is non-trivial. unique syntax each header field.
 -- so far implemented:
-local COMMA_SEPARATED_HEADERS <const> = {["Transfer-Encoding"] = true}
+local COMMA_SEPARATED_HEADERS <const> = {["Transfer-Encoding"] = true, ["Content-Length"] = true}
 local SEMICOLON_SEPARATED_HEADERS <const> = {["Prefer"] = true, [ "Content-Type"] = true, ["Cookie"] = true}
 
 -- run with ctrl+shift+b
@@ -434,16 +434,25 @@ while 1 do
       response_fields["Connection"] = "close"
     end
     -- TODO: is content-length and transfer-encoding valid if both specified? etc.
-    if headers["Transfer-Encoding"][#headers["Transfer-Encoding"]] == "chunked" then
+    if headers["Transfer-Encoding"][#headers["Transfer-Encoding"]]:lower() == "chunked" then
+      -- 501 unrecognised encodings in queue
       for i, v in ipairs(headers["Transfer-Encoding"]) do
-        if v ~= "chunked" then -- TODO: respond_with_501(client)
+        if v:lower() ~= "chunked" then -- TODO: respond_with_501(client)
         end
       end
+      -- else decode chunked
       decode_method = "chunked"
     else -- TODO: respond_with_400(client)
     end
   elseif headers["Content-Length"] ~= nil then
-    -- TODO: there's some shit about invalid fields here and lists.
+    -- list validity check (6.3)
+    for i, v in ipairs(headers["Content-Length"]) do
+      for k, x in ipairs(headers["Content-Length"]) do
+        if v ~= x then -- TODO: respond_with_400(client) and close the connection
+        end
+      end
+    end
+    -- if valid continue
     decode_method = "length"
     body_length = headers["Content-Length"]
   else body_length = 0 end
@@ -466,6 +475,7 @@ while 1 do
     local chunk_header, err = receive_sanitized(client)
     local tokens = string.gmatch(chunk_header,"[^%s]+")
     local chunk_size, chunk_ext = tonumber(tokens()), tokens()
+    -- 7.1.1 chunk extensions. we do not recognise any chunk extensions, so we ignore them.
     while chunk_size > 0 do
       -- need to offset chunk_size to account for additional \r\n
       chunk_data, err = client:receive(chunk_size+2)
@@ -478,15 +488,15 @@ while 1 do
       print("header: " .. chunk_header)
       tokens = string.gmatch(chunk_header,"[^%s]+")
       chunk_size, chunk_ext = tonumber(tokens()), tokens()
+      -- ignore extensions
       print("chunk size: " .. chunk_size)
       chunk_size = tonumber(chunk_size)
     end
     -- read trailer field until crlf
     local trailer_field = read_field_lines_until_crlf(client)
-    for key, value in pairs(trailer_field) do
-      -- TODO: do we always store/forward separate trailer fields?
-    end
-    -- TODO: remove chunked from Transfer-Encoding. currently we do not parse this as a list, so there is no point
+    -- don't do anything with these. but we have them anyway
+    -- remove chunked from Transfer-Encoding
+    headers["Transfer-Encoding"][#headers["Transfer-Encoding"]] = nil
   end
 
   -- log body
@@ -534,6 +544,9 @@ while 1 do
     response_fields["Content-Length"] = response_body:len()
   end
 
+  -- send blank Transfer-Encodings to imply chunked allowed (7.4)
+  response_fields["Transfer-Encoding"] = ""
+  response_fields["Connection"] = ""
 
   -- construct and send response message
   construct_and_send_response(client, response_code, response_fields, response_body)
