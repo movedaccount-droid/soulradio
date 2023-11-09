@@ -1,8 +1,0 @@
-need to handle:
-html
-mp3
-png
-js
-css
-
-next step: add time to 2xx 3xx 4xx headers

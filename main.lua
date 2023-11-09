@@ -1,4 +1,19 @@
+package.path = "../?.lua;" .. package.path
 require "uridecoder"
+
+local OWS <const> = " 	"
+local TCHAR <const> = "%!%#%$%%%&%'%*%+%-%.%6%_%`%|%~%d%a"
+local TOKEN <const> = "[" .. TCHAR .. "]+"
+local FIELD_NAME <const> = TOKEN
+local VCHAR <const> = "%!%\"%#%$%%%&%'%(%)%*%+%,%-%.%/%w%:%;%<%=%>%?%@%[%\\%]%^%_%`%{%|%}%~"
+local OBS_TEXT <const> = "€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ ¡¢£¤¥¦§¨©ª«¬­®¯°±²³´µ¶·¸¹º»¼½¾¿ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖ×ØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõö÷øùúûüýþÿ"
+local FIELD_VCHAR <const> = "[" .. VCHAR .. OBS_TEXT .. "]"
+
+-- all headers MUST be able to be parsed as a list.
+-- however, resolving lists is non-trivial. unique syntax each header field.
+-- so far implemented:
+local COMMA_SEPARATED_HEADERS <const> = {["Transfer-Encoding"] = true}
+local SEMICOLON_SEPARATED_HEADERS <const> = {["Prefer"] = true, [ "Content-Type"] = true, ["Cookie"] = true}
 
 -- run with ctrl+shift+b
 -- install rocks with luarocks in console
@@ -8,50 +23,75 @@ require "uridecoder"
 -- http made really easy, https://www.jmarshall.com/easy/http/
 -- http rfc, https://datatracker.ietf.org/doc/html/rfc9112#line.folding
 
-function reconstruct_target_uri(request_target, fixed_uri_scheme)
-  -- determine type of request_target and validate
-  -- TODO: add 500 bad request returns
-  local request_type
-  local UNRESERVED <const> = "a-zA-Z0-9%-%.%_%~"
-  local SUB_DELIMS <const> = "%!%$%&%'%(%)%*%+%,%;%="
-  local PCT_ENCODED <const> = "%[0-9a-fA-F][0-9a-fA-F]"
-  local PCHAR <const> = UNRESERVED .. SUB_DELIMS .. "%:%@"
-  
-  if request_target == "*" then request_type = "asterisk-form"
-  elseif request_target:sub(1,1) == "/" then
-    -- validate for origin-form
-    if request_target:sub(2,1):gmatch(PCHAR) == nil then end
-    for c in request_target:sub(2,1):gmatch(".") do
-      if c:gmatch(PCHAR .. "/") == nil then end
-    end
-    request_type = "origin-form"
-  elseif request_target:gmatch(":/") == nil then
-    -- validate for authority-form
+function match_field_content(field_content)
+  local char_found
+  field_content, char_found = field_content:gsub("^" .. FIELD_VCHAR, "")
+  if char_found == 0 then return false end
+  if field_content == "" then return true end
+  field_content, char_found = field_content:gsub(FIELD_VCHAR .. "$", "")
+  if char_found == 0 then return false end
+  return field_content:find("^[" .. OWS .. FIELD_VCHAR .. "]$") ~= nil
+end
 
-    request_type = "authority-form"
-  else request_type = "absolute-form"
+function match_field_value(field_value)
+  -- TODO: can this be more efficient?
+  local start_index = 1
+  local end_index = field_value:len()
+  while true do
+    -- iterate backwards from end of string to find largest match, or fail if we find nothing
+    while not match_field_content(field_value:sub(start_index, end_index)) do
+      if end_index == start_index then return false
+      else
+        end_index = end_index - 1
+      end
+    end
+    -- if our match hits the end of the string, we've validated everything. else loop again from current validated position
+    if end_index == field_value:len() then return true
+    else
+      start_index = end_index + 1
+      end_index = field_value:len()
+    end
   end
 end
 
-reconstruct_target_uri("https://www.rfc-editor.org/rfc/rfc3986#section-2.3")
+function reconstruct_target_uri(method_token, request_target, fixed_uri_scheme, host_header_field_value)
+  -- determine uri form
+  -- TODO: can we bypass checking the method token directly?
+  -- ex. localhost:8080 is valid authority /and/ absolute form, so we have to differentiate by method_token
+  local uri_form
+  if uridecoder.match_http_origin_form(request_target) then uri_form = "origin-form"
+  elseif uridecoder.match_http_authority_form(request_target) and method_token == "CONNECT" then uri_form = "authority-form"
+  elseif uridecoder.match_http_absolute_form(request_target) then uri_form = "absolute-form"
+  elseif uridecoder.match_http_asterisk_form(request_target) then uri_form = "asterisk-form"
+  else -- TODO: return error code?
+  end
 
-  local target_uri, scheme
-  -- if request target is in absolute then target_uri = request_target
-  -- else
-    -- scheme (https:// etc.)
-    if fixed_uri_scheme ~= nil then scheme = fixed_uri_scheme
-    -- we do not support https, no need for further checks
-    else scheme = "http" end
+  print(uri_form)
 
-    -- authority component (www.example.com)
+  -- return early for absolute-form
+  if uri_form == "absolute-form" then return request_target end
+  -- determine scheme
+  local scheme
+  if fixed_uri_scheme ~= nil then scheme = fixed_uri_scheme
+  else scheme = "http" end -- no implementation for https, no need to check for it
 
-  -- end
--- end
+  -- determine authority
+  -- TODO: check for invalid header field? what does an invalid field look like?
+  local authority
+  if uri_form == "authority-form" then authority = request_target
+  elseif host_header_field_value ~= nil then authority = host_header_field_value
+  else authority = "" end
 
-function is_whitespace(character_to_check)
-  -- RTAB or space
-  print("given character '" .. character_to_check .. "' returned " .. tostring(character_to_check == " " or character_to_check == "	"))
-  return character_to_check == " " or character_to_check == "	"
+  -- check authority against scheme for compliance
+  if authority == "" and scheme == "http" then end -- TODO: "reject request"
+  
+  -- determine combined path and query component
+  local combined_path_and_query_component
+  if uri_form == "authority-form" or uri_form == "asterisk-form" then combined_path_and_query_component = ""
+  else combined_path_and_query_component = request_target end
+
+  -- reconstruct absolute-uri form
+  return scheme .. "://" .. authority .. combined_path_and_query_component
 end
 
 function receive_sanitized(client, receive_argument)
@@ -76,10 +116,16 @@ function parse_field_line(field_line, table_to_append_to)
   -- TODO: handle malformed field line with generic error
   -- TODO: A server MUST reject, with a response status code of 400 (Bad Request), any received request message that contains whitespace between a header field name and colon
   -- TODO: reject folded field lines with 400 (5.2)
-  local field_name_end, field_value_start = string.find(field_line,":[ \t]*")
-  local field_value_end = string.find(field_line, "[ \t]*$")
-  local field_name = string.sub(field_line, 1, field_name_end - 1)
-  local field_value = string.sub(field_line, field_value_start + 1, field_value_end - 1)
+  -- TODO: validation validation validation on field line etc.
+  -- local field_name_end, field_value_start = string.find(field_line,":[ \t]*")
+  -- trim end whitespace
+  print(field_line)
+  local field_value, field_value_start, field_name
+  field_line = field_line:gsub("[" .. OWS .. "]*$", "")
+  field_value_start, _, field_value = field_line:find("%:[" .. OWS .. "]*(.*)")
+  field_name = field_line:sub(1, field_value_start - 1)
+  if not match_field_value(field_value) then end -- TODO: throw error
+  if not field_name:find("^" .. field_name .. "$") then end -- TODO: throw error
   table_to_append_to[field_name] = field_value
   return table_to_append_to
 end
@@ -89,6 +135,7 @@ function read_field_lines_until_crlf(client, disallow_leading_whitespace)
   -- check if end of field lines and parse buffer if true
   -- else handle exception for first line, then handle unfolding and new field line case.
   -- TODO: folded headers are untested. set up a test case for this
+  -- TODO: disallow duplicate fields, ex. host
   local field_lines = {}
   local field_name, field_value, buffer, line, err
   -- get first line
@@ -105,9 +152,9 @@ function read_field_lines_until_crlf(client, disallow_leading_whitespace)
       elseif buffer == nil then
         if disallow_leading_whitespace == true then
           -- disallow leading whitespace on first header line
-          if not is_whitespace(first_char) then buffer = line end
+          if not first_char:find("[" .. OWS .. "]") then buffer = line end
         else buffer = line end
-      elseif is_whitespace(first_char) then buffer = buffer .. line
+      elseif first_char:find("[" .. OWS .. "]")  then buffer = buffer .. line
       else
         field_name, field_value = parse_field_line(buffer, field_lines)
         field_lines[field_name] = field_value
@@ -116,6 +163,40 @@ function read_field_lines_until_crlf(client, disallow_leading_whitespace)
     end
   end
   return field_lines
+end
+
+function define_field_values(headers)
+  for field_name, field_value in pairs(headers) do
+    -- TODO: check order of operations
+    if COMMA_SEPARATED_HEADERS[field_name] then field_value = process_field_list(field_value, ",") end
+    headers[field_name] = field_value
+  end
+  return headers
+end
+
+function process_field_list(field_value, delimiter)
+  -- rfc9110 5.6.1.2
+  -- TODO: first code back from break. messy
+  local elements = {}
+  local element, delim_start, delim_end
+  local index = 0
+  while true do
+    index = index + 1
+    ::skipped::
+    print("processing: " .. field_value)
+    delim_start, delim_end = field_value:find("[" .. OWS .. "]*" .. delimiter .. "[" .. OWS .. "]*")
+    if delim_start == nil then break end
+    element = field_value:sub(1, delim_start - 1)
+    field_value = field_value:sub(delim_end + 1, -1)
+    if element == "" then goto skipped end
+    elements[index] = element
+  end
+  -- push last value in list, if not blank
+  print(field_value)
+  print(index)
+  if field_value ~= "" then elements[index] = field_value end
+  print(elements[1])
+  return elements
 end
 
 function construct_status_line(code)
@@ -229,18 +310,18 @@ function update_validators(resource_table, resource, modified_timestamp)
   -- TODO: make backend push updates here
   -- TODO: what is the resource_table? where is it stored?
   -- resource table: resource_uri, last_modified, etag
-  resource_table[resource][last_modified] = modified_timestamp
+  resource_table[resource]["last_modified"] = modified_timestamp
   -- TODO: may be necessary to make this modular, i.e. choose between node updates and hashes
-  resource_table[resource][etag] = resource_table[resource][etag] + 1
+  resource_table[resource]["etag"] = resource_table[resource]["etag"] + 1
 end
 
 function get_validators(resource_table, resource)
-  return resource_table[resource][last_modified], resource_table[resource][etag]
+  return resource_table[resource]["last_modified"], resource_table[resource]["etag"]
 end
 
 function get_html_time(unix_time_seconds)
   -- ex. Sun, 06 Nov 1994 08:49:37 GMT
-  if unix_time == nil then return os.date("%a, %d %b %Y %H:%M:%S GMT")
+  if unix_time_seconds == nil then return os.date("%a, %d %b %Y %H:%M:%S GMT")
   else return os.date("%a, %d %b %Y %H:%M:%S GMT", unix_time_seconds) end
 end
 
@@ -306,6 +387,10 @@ while 1 do
   if line == nil then goto start end
   print(line)
 
+  -- initiate variables for server response
+  local response_code, response_body
+  local response_fields = {}
+
   -- logging
   packet_num = packet_num + 1
   print("-------[PACKET " .. packet_num .. " BEGINS]-------")
@@ -326,29 +411,44 @@ while 1 do
 
   -- unfold and parse field lines until empty line for end of headers
   local headers = read_field_lines_until_crlf(client, true)
+  -- define header field values
+  headers = define_field_values(headers)
 
   -- log headers
   print("-------[DUMPED HEADERS]-------")
   for key, value in pairs(headers) do
+    if type(value) == "table" then
+      value = table.concat(value, " | ")
+    end
     print(key .. ": " .. value)
   end
 
+  -- validate headers
+  if headers["Host"] == nil or uridecoder.match_http_uri_host(headers["Host"]) == false then --TODO: respond_with_400(client)
+  end
 
   -- determine how to read the body
   local body_length, decode_method
   if headers["Transfer-Encoding"] ~= nil then
-    -- TODO: if chunked transfer coding is final encoding, message body length determined by reading and decoding chunked data until transfer encode indications completion
-    -- TODO: if chunks transfer is not final, respond with 400 bad request
-    if headers["Transfer-Encoding"] == "chunked" then
+    if headers["Content-Length"] ~= nil or protocol_version == "HTTP/1.0" then
+      response_fields["Connection"] = "close"
+    end
+    -- TODO: is content-length and transfer-encoding valid if both specified? etc.
+    if headers["Transfer-Encoding"][#headers["Transfer-Encoding"]] == "chunked" then
+      for i, v in ipairs(headers["Transfer-Encoding"]) do
+        if v ~= "chunked" then -- TODO: respond_with_501(client)
+        end
+      end
       decode_method = "chunked"
-    else respond_with_400(client) break end
+    else -- TODO: respond_with_400(client)
+    end
   elseif headers["Content-Length"] ~= nil then
     -- TODO: there's some shit about invalid fields here and lists.
     decode_method = "length"
     body_length = headers["Content-Length"]
   else body_length = 0 end
 
-  -- TODO: after full implemenation, check that this is valid for "if everything is okay, throw 100" (15.2.1)
+  -- TODO: after full implementation, check that this is valid for "if everything is okay, throw 100" (15.2.1)
   if headers["Expect"] == "100-continue" then respond_with_100(client, protocol_version) end
 
 
@@ -377,7 +477,7 @@ while 1 do
       chunk_header, err = receive_sanitized(client)
       print("header: " .. chunk_header)
       tokens = string.gmatch(chunk_header,"[^%s]+")
-      chunk_size, chunk_ext = tokens(), tokens()
+      chunk_size, chunk_ext = tonumber(tokens()), tokens()
       print("chunk size: " .. chunk_size)
       chunk_size = tonumber(chunk_size)
     end
@@ -400,8 +500,6 @@ while 1 do
   -- this is where, for instance, we would determine what to do with a url-encoded form
   -- this will likely be handed back somewhere else for processing as we extend from this webserver, so for now we should just skip this.
   local processed_body = body
-  local response_code, response_body
-  local response_fields = {}
 
   -- TEMPORARILY set everything to respond 200
   response_code = 200
@@ -413,12 +511,21 @@ while 1 do
   if connection_close or not (http_11_continue or http_10_continue) then response_fields["Connection"] = "close" end
 
   -- emulating page for test suite, for now
-  if request_target == "/test.html" then
+  if true then
     response_code = 200
     response_body = "method token: " .. method_token .. "<br>request target: " .. request_target .. "<br>protocol version: " .. protocol_version
-    response_body = response_body .. "<img src='pic_trulli.jpg' alt='Italian Trulli'><img src='pic_trulldi.jpg' alt='Italian Trulli'><img src='pic_trulsli.jpg' alt='Italian Trulli'><img src='pic_trulcli.jpg' alt='Italian Trulli'><img src='pic_trullpli.jpg' alt='Italian Trulli'>"
+    response_body = response_body .. "<br>absolute uri: " .. reconstruct_target_uri(method_token, request_target, nil, headers["Host"])
+    --response_body = response_body .. "<img src='pic_trulli.jpg' alt='Italian Trulli'><img src='pic_trulldi.jpg' alt='Italian Trulli'><img src='pic_trulsli.jpg' alt='Italian Trulli'><img src='pic_trulcli.jpg' alt='Italian Trulli'><img src='pic_trullpli.jpg' alt='Italian Trulli'>"
     response_body = response_body .. "<br>"
     for key, value in pairs(headers) do
+      if type(value) == "table" then
+        local new_value = ""
+        for i, v in ipairs(value) do
+          if new_value ~= "" then new_value = new_value .. ", " end
+          new_value = new_value .. v
+        end
+        value = new_value
+      end
       response_body = response_body .. "<br>" .. key .. ": " .. value
     end
     response_body = response_body .. "<br>"

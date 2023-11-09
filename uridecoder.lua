@@ -205,24 +205,21 @@ uridecoder.match_uri = function(uri)
 end
 
 uridecoder.match_absolute_uri = function(absolute_uri)
-    local scheme_end
-    _, scheme_end = absolute_uri:find("^" .. SCHEME .. "%:")
-    if scheme_end == nil then return false end
-    absolute_uri = absolute_uri:sub(scheme_end + 1, -1)
-    local query_start = absolute_uri:find("%?" .. QUERY .. "$")
-    if query_start ~= nil then absolute_uri = absolute_uri:sub(1, query_start - 1) end
+    local port_found
+    absolute_uri, port_found = absolute_uri:gsub("^" .. SCHEME .. "%:", "")
+    if port_found == 0 then return false end
+    absolute_uri = absolute_uri:gsub("%?" .. QUERY .. "$", "")
     return uridecoder.match_hier_part(absolute_uri)
 end
 
 uridecoder.match_http_absolute_path = function(http_absolute_path)
     local segment_count
-    http_absolute_path, segment_count = http_absolute_path:gsub("%/" .. SEGMENT,"")
-    return segment_count > 1 and http_absolute_path == ""
+    http_absolute_path, segment_count = http_absolute_path:gsub("%/" .. SEGMENT, "")
+    return segment_count > 0 and http_absolute_path == ""
 end
 
 uridecoder.match_http_origin_form = function(http_origin_form)
-    local query_start = http_origin_form:find("%?" .. QUERY .. "$")
-    if query_start ~= nil then http_origin_form = http_origin_form:sub(1, query_start - 1) end
+    http_origin_form = http_origin_form:gsub("%?" .. QUERY .. "$", "")
     return uridecoder.match_http_absolute_path(http_origin_form)
 end
 
@@ -241,9 +238,7 @@ uridecoder.match_http_asterisk_form = function(http_asterisk_form)
     return http_asterisk_form == "*"
 end
 
-while 1 do
-    io.write("enter uri")
-    io.flush()
-    local answer=io.read()
-    print(uridecoder.match_uri(answer))
+uridecoder.match_http_uri_host = function(http_uri_host)
+    http_uri_host = http_uri_host:gsub("%:" .. PORT .. "$", "")
+    return uridecoder.match_host(http_uri_host)
 end
