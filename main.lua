@@ -56,14 +56,12 @@ end
 
 function reconstruct_target_uri(method_token, request_target, fixed_uri_scheme, host_header_field_value)
   -- determine uri form
-  -- TODO: can we bypass checking the method token directly?
-  -- ex. localhost:8080 is valid authority /and/ absolute form, so we have to differentiate by method_token
   local uri_form
   if uridecoder.match_http_origin_form(request_target) then uri_form = "origin-form"
   elseif uridecoder.match_http_authority_form(request_target) and method_token == "CONNECT" then uri_form = "authority-form"
   elseif uridecoder.match_http_absolute_form(request_target) then uri_form = "absolute-form"
   elseif uridecoder.match_http_asterisk_form(request_target) then uri_form = "asterisk-form"
-  else -- TODO: return error code?
+  else return nil, "target uri failed to match any known format during reconstruction"
   end
 
   print(uri_form)
@@ -76,14 +74,14 @@ function reconstruct_target_uri(method_token, request_target, fixed_uri_scheme, 
   else scheme = "http" end -- no implementation for https, no need to check for it
 
   -- determine authority
-  -- TODO: check for invalid header field? what does an invalid field look like?
+  -- TODO: combine headers into table further back, and check for them as invalid here
   local authority
   if uri_form == "authority-form" then authority = request_target
-  elseif host_header_field_value ~= nil then authority = host_header_field_value
-  else authority = "" end
+  elseif host_header_field_value ~= nil and uridecoder.match_http_uri_host(host_header_field_value) then authority = host_header_field_value
+  else return nil, "request message featured invalid host header field line" end
 
   -- check authority against scheme for compliance
-  if authority == "" and scheme == "http" then end -- TODO: "reject request"
+  if authority == "" and scheme == "http" then return "request target uri authority empty when uri scheme required non-empty authority" end -- "reject request" assumed as 400
   
   -- determine combined path and query component
   local combined_path_and_query_component
@@ -92,6 +90,10 @@ function reconstruct_target_uri(method_token, request_target, fixed_uri_scheme, 
 
   -- reconstruct absolute-uri form
   return scheme .. "://" .. authority .. combined_path_and_query_component
+end
+
+function write_sanitized_field(fields, field_name, field_value)
+  -- sanitizes bare cr and 
 end
 
 function receive_sanitized(client, receive_argument)
@@ -109,23 +111,20 @@ function parse_start_line(start_line)
   return tokens(), tokens(), tokens()
 end
 
+function test()
+
+end
+
 function parse_field_line(field_line, table_to_append_to)
   if table_to_append_to == nil then table_to_append_to = {} end
   -- parse a header field line and return values as a table, appending if one is provided
   -- ex. Sec-Fetch-Dest: document
-  -- TODO: handle malformed field line with generic error
-  -- TODO: A server MUST reject, with a response status code of 400 (Bad Request), any received request message that contains whitespace between a header field name and colon
-  -- TODO: reject folded field lines with 400 (5.2)
-  -- TODO: validation validation validation on field line etc.
-  -- local field_name_end, field_value_start = string.find(field_line,":[ \t]*")
-  -- trim end whitespace
-  print(field_line)
   local field_value, field_value_start, field_name
   field_line = field_line:gsub("[" .. OWS .. "]*$", "")
   field_value_start, _, field_value = field_line:find("%:[" .. OWS .. "]*(.*)")
   field_name = field_line:sub(1, field_value_start - 1)
-  if not match_field_value(field_value) then end -- TODO: throw error
-  if not field_name:find("^" .. field_name .. "$") then end -- TODO: throw error
+  if not match_field_value(field_value) then return nil, "[!] ERR: found field value in field line was invalid" end -- TODO: throw error
+  if not field_name:find("^" .. field_name .. "$") then return nil, "[!] ERR: found field name in field line was invalid" end -- TODO: throw error
   table_to_append_to[field_name] = field_value
   return table_to_append_to
 end
@@ -202,7 +201,7 @@ end
 function construct_status_line(code)
   local protocol_version = "HTTP/1.1"
   -- lookup the status text against the code
-  local status_text_lookup <const> = {[200] = "OK", [404] = "Not Found", [100] = "Continue"}
+  local status_text_lookup <const> = {[200] = "OK", [404] = "Not Found", [100] = "Continue", [400] = "Bad Request"}
   local status_text = status_text_lookup[code]
   return protocol_version .. " " .. code .. " " .. status_text
 end
@@ -276,7 +275,7 @@ function respond_with_201(client, location, validators)
   -- validators are optional for PUT requests in some cases
   if validators ~= nil then
     for key, value in pairs(validators) do response_fields[key] = value end
-  else print("[?] NOTE: 201 responded without validators. was this because of a PUT request?") end
+  else print("[?] NTE: 201 responded without validators. was this because of a PUT request?") end
   construct_and_send_response(client, 201, response_fields)
 end
 
@@ -288,7 +287,7 @@ end
 function respond_with_204(client, validators)
   -- No Content
   local response_fields = validators
-  construct_and_send_response(client, 204, validators)
+  construct_and_send_response(client, 204, response_fields)
 end
 
 function respond_with_205(client)
@@ -341,55 +340,15 @@ function close_connection(client, connections)
   end
 end
 
--- load namespace
-local socket = require("socket")
--- create a TCP socket and bind it to the local host, at any port
-local server = assert(socket.bind("*", 8080))
-server:settimeout(0.2)
--- find out which port the OS chose for us
-local ip, port = server:getsockname()
-local connections = {server}
--- print a message informing what's up
-print("Please telnet to localhost on port " .. port)
-print("After connecting, you have 10s to enter a line to be echoed")
--- loop forever waiting for clients
-local packet_num = 0
-while 1 do
-  ::start::
-
-  -- wait for a socket to have something to read
-  local readable_sockets, trash, err = socket.select(connections, nil)
-  
-  -- iterate all existing connections to check what we need to do
-  local line, err, client
-  for i, connection in ipairs(readable_sockets) do
-    if connection == server then
-      -- accept the incoming connection
-      local new_connection = server:accept()
-      new_connection:settimeout(0.2)
-      table.insert(connections, new_connection)
-      goto start
-    else
-      -- read the incoming line
-      line, err = receive_sanitized(connection)
-      if not err then
-        -- we have a start line, move on
-        -- TODO: functionise everything after this point so our flow is less fucked and we can handle all incoming data in a row
-        client = connection
-        break
-      elseif err == "closed" then
-        close_connection(connection, connections)
-      end
-    end
-  end
+function process_incoming(client, first_line)
   -- if we don't have a line, go back
   -- this will be less dumb after refactor
-  if line == nil then goto start end
-  print(line)
+  if first_line == nil then return nil, "no line found" end
+  print(first_line)
 
   -- initiate variables for server response
-  local response_code, response_body
-  local response_fields = {}
+  -- should contain response_line, response_fields, response_body
+  local response
 
   -- logging
   packet_num = packet_num + 1
@@ -398,7 +357,8 @@ while 1 do
   -- process the line we just got
   -- skip arbitrary number of crlf
   -- TODO: limit this so a client can't hold up the server forever with unlimited crlf
-  while line == "" do line = receive_sanitized(client) end
+  local line, err
+  while line == "" do line, err = receive_sanitized(client) end
   local method_token, request_target, protocol_version
   if not err then
     method_token, request_target, protocol_version = parse_start_line(line)
@@ -424,7 +384,11 @@ while 1 do
   end
 
   -- validate headers
-  if headers["Host"] == nil or uridecoder.match_http_uri_host(headers["Host"]) == false then --TODO: respond_with_400(client)
+  local target_uri, err = reconstruct_target_uri(method_token, request_target, nil, headers["Host"])
+  if err then
+    print("err")
+    response_code = 400
+    goto send_response
   end
 
   -- determine how to read the body
@@ -433,7 +397,6 @@ while 1 do
     if headers["Content-Length"] ~= nil or protocol_version == "HTTP/1.0" then
       response_fields["Connection"] = "close"
     end
-    -- TODO: is content-length and transfer-encoding valid if both specified? etc.
     if headers["Transfer-Encoding"][#headers["Transfer-Encoding"]]:lower() == "chunked" then
       -- 501 unrecognised encodings in queue
       for i, v in ipairs(headers["Transfer-Encoding"]) do
@@ -442,13 +405,19 @@ while 1 do
       end
       -- else decode chunked
       decode_method = "chunked"
-    else -- TODO: respond_with_400(client)
+    else
+      response_code = 400
+      response_fields["Connection"] = "close"
+      goto send_response
     end
   elseif headers["Content-Length"] ~= nil then
     -- list validity check (6.3)
     for i, v in ipairs(headers["Content-Length"]) do
       for k, x in ipairs(headers["Content-Length"]) do
-        if v ~= x then -- TODO: respond_with_400(client) and close the connection
+        if v ~= x then
+          response_code = 400
+          response_fields["Connection"] = "close"
+          goto send_response
         end
       end
     end
@@ -456,8 +425,7 @@ while 1 do
     decode_method = "length"
     body_length = headers["Content-Length"]
   else body_length = 0 end
-
-  -- TODO: after full implementation, check that this is valid for "if everything is okay, throw 100" (15.2.1)
+  
   if headers["Expect"] == "100-continue" then respond_with_100(client, protocol_version) end
 
 
@@ -478,7 +446,7 @@ while 1 do
     -- 7.1.1 chunk extensions. we do not recognise any chunk extensions, so we ignore them.
     while chunk_size > 0 do
       -- need to offset chunk_size to account for additional \r\n
-      chunk_data, err = client:receive(chunk_size+2)
+      local chunk_data, err = client:receive(chunk_size+2)
       body = body .. string.sub(chunk_data,1,-3)
       print("chunk_data: " .. chunk_data)
       print("chunk handled: " .. string.sub(chunk_data,1,-3))
@@ -513,18 +481,12 @@ while 1 do
 
   -- TEMPORARILY set everything to respond 200
   response_code = 200
-  
-  -- persistence handling (9.3)
-  local connection_close = headers["Connection"] == "close"
-  local http_11_continue = (protocol_version == "HTTP/1.1")
-  local http_10_continue = (protocol_version == "HTTP/1.0" and response_fields["Connection"] == "keep-alive")
-  if connection_close or not (http_11_continue or http_10_continue) then response_fields["Connection"] = "close" end
 
   -- emulating page for test suite, for now
   if true then
     response_code = 200
     response_body = "method token: " .. method_token .. "<br>request target: " .. request_target .. "<br>protocol version: " .. protocol_version
-    response_body = response_body .. "<br>absolute uri: " .. reconstruct_target_uri(method_token, request_target, nil, headers["Host"])
+    response_body = response_body .. "<br>absolute uri: " .. target_uri
     --response_body = response_body .. "<img src='pic_trulli.jpg' alt='Italian Trulli'><img src='pic_trulldi.jpg' alt='Italian Trulli'><img src='pic_trulsli.jpg' alt='Italian Trulli'><img src='pic_trulcli.jpg' alt='Italian Trulli'><img src='pic_trullpli.jpg' alt='Italian Trulli'>"
     response_body = response_body .. "<br>"
     for key, value in pairs(headers) do
@@ -544,16 +506,68 @@ while 1 do
     response_fields["Content-Length"] = response_body:len()
   end
 
+  return response
+end
+
+function send_response(response)
+  -- finalize and send response
+  -- persistence handling (9.3)
+  -- TODO move
+  local connection_close = headers["Connection"] == "close"
+  local http_11_continue = (protocol_version == "HTTP/1.1")
+  local http_10_continue = (protocol_version == "HTTP/1.0" and headers["Connection"] == "keep-alive")
+  if connection_close or not (http_11_continue or http_10_continue) then response_fields["Connection"] = "close" end
+
   -- send blank Transfer-Encodings to imply chunked allowed (7.4)
   response_fields["Transfer-Encoding"] = ""
-  response_fields["Connection"] = ""
+  if response_fields["Connection"] == nil then response_fields["Connection"] = "" end
 
   -- construct and send response message
   construct_and_send_response(client, response_code, response_fields, response_body)
 
   -- follow through on persistence (9.3)
-  if response_fields["Connection"] == "close" then close_connection(client, connections) end
-
+  return response_fields["Connection"] == "close"
 end
 
 -- TODO: implement 9.5 graceful timeouts
+
+-- load namespace
+local socket = require("socket")
+-- create a TCP socket and bind it to the local host, at any port
+local server = assert(socket.bind("*", 8080))
+server:settimeout(0.2)
+-- find out which port the OS chose for us
+local ip, port = server:getsockname()
+local connections = {server}
+-- print a message informing what's up
+print("server started on localhost port " .. port)
+-- loop forever waiting for clients
+local packet_num = 0
+while 1 do
+  
+  -- wait for a socket to have something to read
+  local readable_sockets, trash, err = socket.select(connections, nil)
+  
+  -- iterate all existing connections to check what we need to do
+  local line, err, client
+  for i, connection in ipairs(readable_sockets) do
+    if connection == server then
+      -- accept the incoming connection
+      local new_connection = server:accept()
+      new_connection:settimeout(0.2)
+      table.insert(connections, new_connection)
+    else
+      -- read the incoming line
+      line, err = receive_sanitized(connection)
+      if not err then
+        -- we have a start line, move on
+        -- TODO: functionise everything after this point so our flow is less fucked and we can handle all incoming data in a row
+        response = process_incoming(connection, line)
+        close_connection = send_response(response)
+        if close_connection then close_connection(connection, connections) end
+      elseif err == "closed" then
+        close_connection(connection, connections)
+      end
+    end
+  end
+end
