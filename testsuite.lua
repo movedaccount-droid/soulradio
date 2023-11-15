@@ -74,8 +74,9 @@ local client = socket.connect("localhost", port)
 local test_message, test_request
 
 test_message = "2.2: a server that is expecting to receive and parse a request-line SHOULD ignore at least one empty line (CRLF) received prior to the request-line."
-test_request = "\r\n\r\nGET /test.html HTTP/1.1\r\nsuccess: successful\r\n\r\n"
+test_request = "\r\n\r\nGET /test.html HTTP/1.1\r\nsuccess: successful\r\nhost:localhost:8080\r\n\r\n"
 client:send(test_request)
+print(body)
 local first_line, headers, body, output = get_client_response(client)
 assert(string.find(body, "success: successful") ~= nil and first_line["response_code"] == 200, build_failure_message(test_message, output))
 print("PASSED: " .. test_message)
@@ -89,7 +90,7 @@ print("PASSED: " .. test_message)
 -- print("PASSED: " .. test_message)
 
 test_message = "2.2: A recipient that receives whitespace between the start-line and the first header field MUST either reject the message as invalid or consume each whitespace-preceded line without further processing of it"
-test_request = "\r\n\r\nGET /test.html HTTP/1.1\r\n ignored: success\r\n ignored2: success \r\nincluded: success\r\n folded\r\n\r\n"
+test_request = "\r\n\r\nGET /test.html HTTP/1.1\r\n ignored: success\r\n ignored2: success \r\nincluded: success\r\n folded\r\nhost:localhost:8080\r\n\r\n"
 client:send(test_request)
 local first_line, headers, body, output = get_client_response(client)
 assert(string.find(body, "included: success folded") ~= nil and string.find(body, "ignored: success") == nil and string.find(body, "ignored2: success") == nil and first_line["response_code"] == 200, build_failure_message(test_message, output))
@@ -124,7 +125,7 @@ assert(string.find(body, "absolute uri: http%:%/%/localhost%:8080") ~= nil and f
 print("PASSED: " .. test_message)
 
 test_message = "5: Each field line consists of a case-insensitive field name followed by a colon (':'), optional leading whitespace, the field line value, and optional trailing whitespace."
-test_request = "\r\n\r\nGET /test.html HTTP/1.1\r\nnospace:success\r\nonespace: success \r\ntwospace:  success  \r\ntab:	success	\r\nmixed:  	   	    success   	  	   \r\n\r\n"
+test_request = "\r\n\r\nGET /test.html HTTP/1.1\r\nnospace:success\r\nhost:localhost:8080\r\nonespace: success \r\ntwospace:  success  \r\ntab:	success	\r\nmixed:  	   	    success   	  	   \r\n\r\n"
 client:send(test_request)
 local first_line, headers, body, output = get_client_response(client)
 assert(string.find(body, "nospace: success") ~= nil and string.find(body, "onespace: success") ~= nil and string.find(body, "twospace: success") ~= nil and string.find(body, "tab: success") ~= nil and string.find(body, "mixed: success") ~= nil and first_line["response_code"] == 200, build_failure_message(test_message, output))

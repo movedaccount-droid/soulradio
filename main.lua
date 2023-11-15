@@ -12,8 +12,10 @@ local FIELD_VCHAR <const> = "[" .. VCHAR .. OBS_TEXT .. "]"
 -- all headers MUST be able to be parsed as a list.
 -- however, resolving lists is non-trivial. unique syntax each header field.
 -- so far implemented:
-local COMMA_SEPARATED_HEADERS <const> = {["Transfer-Encoding"] = true, ["Content-Length"] = true}
-local SEMICOLON_SEPARATED_HEADERS <const> = {["Prefer"] = true, [ "Content-Type"] = true, ["Cookie"] = true}
+local COMMA_SEPARATED_HEADERS <const> = {["transfer-encoding"] = true, ["content-length"] = true}
+-- local SEMICOLON_SEPARATED_HEADERS <const> = {["prefer"] = true, [ "content-type"] = true, ["cookie"] = true}
+
+local packet_num = 0
 
 -- run with ctrl+shift+b
 -- install rocks with luarocks in console
@@ -34,7 +36,6 @@ function match_field_content(field_content)
 end
 
 function match_field_value(field_value)
-  -- TODO: can this be more efficient?
   local start_index = 1
   local end_index = field_value:len()
   while true do
@@ -64,8 +65,6 @@ function reconstruct_target_uri(method_token, request_target, fixed_uri_scheme, 
   else return nil, "target uri failed to match any known format during reconstruction"
   end
 
-  print(uri_form)
-
   -- return early for absolute-form
   if uri_form == "absolute-form" then return request_target end
   -- determine scheme
@@ -74,10 +73,9 @@ function reconstruct_target_uri(method_token, request_target, fixed_uri_scheme, 
   else scheme = "http" end -- no implementation for https, no need to check for it
 
   -- determine authority
-  -- TODO: combine headers into table further back, and check for them as invalid here
   local authority
   if uri_form == "authority-form" then authority = request_target
-  elseif host_header_field_value ~= nil and uridecoder.match_http_uri_host(host_header_field_value) then authority = host_header_field_value
+  elseif type(host_header_field_value) == "string" and uridecoder.match_http_uri_host(host_header_field_value) then authority = host_header_field_value
   else return nil, "request message featured invalid host header field line" end
 
   -- check authority against scheme for compliance
@@ -107,7 +105,7 @@ function parse_start_line(start_line)
   -- parse the first line of a http request (2.3-3.1)
   -- contains method, target and protocol, space separated
   -- see https://stackoverflow.com/questions/1426954/split-string-in-lua
-  tokens = string.gmatch(start_line,"[^ \t]+")
+  local tokens = string.gmatch(start_line,"[^ \t]+")
   return tokens(), tokens(), tokens()
 end
 
@@ -123,9 +121,13 @@ function parse_field_line(field_line, table_to_append_to)
   field_line = field_line:gsub("[" .. OWS .. "]*$", "")
   field_value_start, _, field_value = field_line:find("%:[" .. OWS .. "]*(.*)")
   field_name = field_line:sub(1, field_value_start - 1)
-  if not match_field_value(field_value) then return nil, "[!] ERR: found field value in field line was invalid" end -- TODO: throw error
-  if not field_name:find("^" .. field_name .. "$") then return nil, "[!] ERR: found field name in field line was invalid" end -- TODO: throw error
-  table_to_append_to[field_name] = field_value
+  if not match_field_value(field_value) then return nil, "[!] ERR: found field value in field line was invalid" end
+  if not field_name:find("^" .. FIELD_NAME .. "$") then return nil, "[!] ERR: found field name '" .. field_name .. "' in field line was invalid" end
+  -- force case insensitivity
+  field_name = field_name:lower()
+  -- merge duplicates into table
+  if table_to_append_to[field_name] == nil then table_to_append_to[field_name] = field_value
+  else table.insert(table_to_append_to[field_name],field_value) end
   return table_to_append_to
 end
 
@@ -133,8 +135,6 @@ function read_field_lines_until_crlf(client, disallow_leading_whitespace)
   -- unfold and parse field lines until empty line
   -- check if end of field lines and parse buffer if true
   -- else handle exception for first line, then handle unfolding and new field line case.
-  -- TODO: folded headers are untested. set up a test case for this
-  -- TODO: disallow duplicate fields, ex. host
   local field_lines = {}
   local field_name, field_value, buffer, line, err
   -- get first line
@@ -144,8 +144,9 @@ function read_field_lines_until_crlf(client, disallow_leading_whitespace)
     if not err then
       if line == "" then
         if buffer ~= nil then
-          field_name, field_value = parse_field_line(buffer, field_lines)
-          field_lines[field_name] = field_value
+          local parsed_lines, err = parse_field_line(buffer, field_lines)
+          if err then return nil, err
+          elseif parsed_lines == nil then return nil, "[!] ERR: null lines parsed when reading field lines until crlf, aborting" end
         end
         break
       elseif buffer == nil then
@@ -155,8 +156,9 @@ function read_field_lines_until_crlf(client, disallow_leading_whitespace)
         else buffer = line end
       elseif first_char:find("[" .. OWS .. "]")  then buffer = buffer .. line
       else
-        field_name, field_value = parse_field_line(buffer, field_lines)
-        field_lines[field_name] = field_value
+        local parsed_lines, err = parse_field_line(buffer, field_lines)
+        if err then return nil, err
+        elseif parsed_lines == nil then return nil, "[!] ERR: null lines parsed when reading field lines until crlf, aborting" end
         buffer = line
       end
     end
@@ -175,7 +177,6 @@ end
 
 function process_field_list(field_value, delimiter)
   -- rfc9110 5.6.1.2
-  -- TODO: first code back from break. messy
   local elements = {}
   local element, delim_start, delim_end
   local index = 0
@@ -201,7 +202,7 @@ end
 function construct_status_line(code)
   local protocol_version = "HTTP/1.1"
   -- lookup the status text against the code
-  local status_text_lookup <const> = {[200] = "OK", [404] = "Not Found", [100] = "Continue", [400] = "Bad Request"}
+  local status_text_lookup <const> = {[200] = "OK", [404] = "Not Found", [100] = "Continue", [400] = "Bad Request", [501] = "Not Implemented"}
   local status_text = status_text_lookup[code]
   return protocol_version .. " " .. code .. " " .. status_text
 end
@@ -210,99 +211,34 @@ function construct_field_line(field_name, field_value)
   return field_name .. ": " .. field_value
 end
 
-function construct_and_send_response(client, response_code, response_fields, response_body)
+function construct_and_send_response(client, response)
+  -- dump response to console
+  print("-------[DUMPED RESPONSE]-------")
+  print("code: " .. response["code"])
+  print("-------[DUMPED RESPONSE FIELDS]-------")
+  for key, value in pairs(response["field"]) do
+    if type(value) == "table" then
+      value = table.concat(value, " | ")
+    end
+    print(key .. ": " .. value)
+  end
+  print("-------[DUMPED RESPONSE BODY]-------")
+  print(response["body"])
   -- constructing the response message
   -- construct the status line
-  local response = construct_status_line(response_code)
+  local response_string = construct_status_line(response["code"])
   -- construct each field line
-  if response_fields ~= nil then for field_name, field_value in pairs(response_fields) do
-    response = response .. "\r\n" .. construct_field_line(field_name, field_value)
-  end end
+  if response["field"] ~= nil then
+    for field_name, field_value in pairs(response["field"]) do
+      response_string = response_string .. "\r\n" .. construct_field_line(field_name, field_value)
+    end
+  end
   -- end headers
-  response = response .. "\r\n\r\n"
+  response_string = response_string .. "\r\n\r\n"
   -- construct the body
-  if response_body ~= nil then response = response .. response_body end
+  if response["body"] ~= nil then response_string = response_string .. response["body"] end
   -- send
-  client:send(response)
-end
-
--- 1xx http/1.0 check is not required, since all 1xx responses stem from 1.1 client-requests
-
-function construct_xxx_response()
-
-end
-
-function construct_1xx_response()
-
-end
-
-function construct_2xx_response()
-
-end
-
-function construct_3xx_response()
-
-end
-
-function construct_4xx_response()
-
-end
-
-function construct_5xx_response(client)
-
-end
-
--- sending a code is abstracted to a single function each,
--- with arguments intended to act as a template.
--- this might get refactored, but we'll see.
-
-function respond_with_100(client, protocol_version)
-  -- Continue
-  construct_and_send_response(client, 100)
-end
-
--- NOT IMPLEMENTED: 101 Switching Protocols
--- no other protocols are planned for implementation, so we can ignore all Upgrade headers and continue
-
-function respond_with_200(client, file, metadata)
-  -- OK
-  -- TODO: this
-end
-
-function respond_with_201(client, location, validators)
-  -- Created
-  local response_fields = { Location = location }
-  -- validators are optional for PUT requests in some cases
-  if validators ~= nil then
-    for key, value in pairs(validators) do response_fields[key] = value end
-  else print("[?] NTE: 201 responded without validators. was this because of a PUT request?") end
-  construct_and_send_response(client, 201, response_fields)
-end
-
-function respond_with_202(client)
-  -- Accepted
-  construct_and_send_response(client, 202)
-end
-
-function respond_with_204(client, validators)
-  -- No Content
-  local response_fields = validators
-  construct_and_send_response(client, 204, response_fields)
-end
-
-function respond_with_205(client)
-  -- Reset Content
-  construct_and_send_response(client, 205)
-end
-
-function respond_with_400(client)
-  -- Bad Request
-  construct_and_send_response(client, 400)
-end
-
-function respond_with_404(client)
-  -- Not Found
-  construct_and_send_response(client, 404)
+  client:send(response_string)
 end
 
 function update_validators(resource_table, resource, modified_timestamp)
@@ -340,25 +276,34 @@ function close_connection(client, connections)
   end
 end
 
-function process_incoming(client, first_line)
+function process_incoming(client, line)
   -- if we don't have a line, go back
   -- this will be less dumb after refactor
-  if first_line == nil then return nil, "no line found" end
-  print(first_line)
+  if line == nil then return nil, "no line found" end
 
   -- initiate variables for server response
-  -- should contain response_line, response_fields, response_body
-  local response
+  -- should contain line, fields, body
+  local response = {}
+  response["field"] = {}
 
   -- logging
   packet_num = packet_num + 1
   print("-------[PACKET " .. packet_num .. " BEGINS]-------")
 
   -- process the line we just got
-  -- skip arbitrary number of crlf
-  -- TODO: limit this so a client can't hold up the server forever with unlimited crlf
-  local line, err
-  while line == "" do line, err = receive_sanitized(client) end
+  -- skip arbitrary number of crlf, limited so a client can't hold up the server forever with unlimited crlf
+  local err
+  local count = 0
+  while line == "" do
+    line, err = receive_sanitized(client)
+    count = count + 1
+    if count > 15 then
+      print("crlf count passed 15 limit whilst receiving, aborting")
+      response["code"] = 400
+      response["field"]["Connection"] = "close"
+      return response
+    end
+  end
   local method_token, request_target, protocol_version
   if not err then
     method_token, request_target, protocol_version = parse_start_line(line)
@@ -370,7 +315,13 @@ function process_incoming(client, first_line)
 
 
   -- unfold and parse field lines until empty line for end of headers
-  local headers = read_field_lines_until_crlf(client, true)
+  local headers, err = read_field_lines_until_crlf(client, true)
+  if err then
+    print(err)
+    response["code"] = 400
+    response["field"]["Connection"] = "close"
+    return response
+  end
   -- define header field values
   headers = define_field_values(headers)
 
@@ -384,50 +335,63 @@ function process_incoming(client, first_line)
   end
 
   -- validate headers
-  local target_uri, err = reconstruct_target_uri(method_token, request_target, nil, headers["Host"])
+  -- todo; force lowercase headers for case insensitivity if needed
+  local target_uri, err = reconstruct_target_uri(method_token, request_target, nil, headers["host"])
   if err then
-    print("err")
-    response_code = 400
-    goto send_response
+    print(err)
+    response["code"] = 400
+    response["field"]["Connection"] = "close"
+    return response
   end
 
   -- determine how to read the body
   local body_length, decode_method
-  if headers["Transfer-Encoding"] ~= nil then
-    if headers["Content-Length"] ~= nil or protocol_version == "HTTP/1.0" then
-      response_fields["Connection"] = "close"
+  if headers["transfer-encoding"] ~= nil then
+    if headers["content-length"] ~= nil or protocol_version == "HTTP/1.0" then
+      response["field"]["Connection"] = "close"
     end
-    if headers["Transfer-Encoding"][#headers["Transfer-Encoding"]]:lower() == "chunked" then
+    if headers["transfer-encoding"][#headers["transfer-encoding"]]:lower() == "chunked" then
       -- 501 unrecognised encodings in queue
-      for i, v in ipairs(headers["Transfer-Encoding"]) do
-        if v:lower() ~= "chunked" then -- TODO: respond_with_501(client)
+      for i, v in ipairs(headers["transfer-encoding"]) do
+        if v:lower() ~= "chunked" then
+          -- 501 Not Implemented
+          response["code"] = 501
+          return response
         end
       end
       -- else decode chunked
       decode_method = "chunked"
     else
-      response_code = 400
-      response_fields["Connection"] = "close"
-      goto send_response
+      print("last encoding was not chunked, aborting")
+      response["code"] = 400
+      response["field"]["Connection"] = "close"
+      return response
     end
   elseif headers["Content-Length"] ~= nil then
     -- list validity check (6.3)
-    for i, v in ipairs(headers["Content-Length"]) do
-      for k, x in ipairs(headers["Content-Length"]) do
+    for i, v in ipairs(headers["content-length"]) do
+      for k, x in ipairs(headers["content-length"]) do
         if v ~= x then
-          response_code = 400
-          response_fields["Connection"] = "close"
-          goto send_response
+          print("length was list but was not valid, aborting")
+          response["code"] = 400
+          response["field"]["Connection"] = "close"
+          return response
         end
       end
     end
     -- if valid continue
     decode_method = "length"
-    body_length = headers["Content-Length"]
+    body_length = headers["content-length"]
   else body_length = 0 end
-  
-  if headers["Expect"] == "100-continue" then respond_with_100(client, protocol_version) end
 
+  -- persistence handling (9.3)
+  local connection_close = headers["Connection"] == "close"
+  local http_11_continue = (protocol_version == "HTTP/1.1")
+  local http_10_continue = (protocol_version == "HTTP/1.0" and headers["Connection"] == "keep-alive")
+  if connection_close or not (http_11_continue or http_10_continue) then response["field"]["Connection"] = "close" end
+
+  -- continue implementation
+  if headers["Expect"] == "100-continue" then respond_with_100(client, protocol_version) end
 
   -- read body
   -- TODO: handle incomplete messages (8)
@@ -441,12 +405,24 @@ function process_incoming(client, first_line)
     body = ""
     body_length = 0
     local chunk_header, err = receive_sanitized(client)
+    if err then
+      print(err)
+      response["code"] = 400
+      response["field"]["Connection"] = "close"
+      return response
+    end
     local tokens = string.gmatch(chunk_header,"[^%s]+")
     local chunk_size, chunk_ext = tonumber(tokens()), tokens()
     -- 7.1.1 chunk extensions. we do not recognise any chunk extensions, so we ignore them.
     while chunk_size > 0 do
       -- need to offset chunk_size to account for additional \r\n
       local chunk_data, err = client:receive(chunk_size+2)
+      if err then
+        print(err)
+        response["code"] = 400
+        response["field"]["Connection"] = "close"
+        return response
+      end
       body = body .. string.sub(chunk_data,1,-3)
       print("chunk_data: " .. chunk_data)
       print("chunk handled: " .. string.sub(chunk_data,1,-3))
@@ -464,7 +440,7 @@ function process_incoming(client, first_line)
     local trailer_field = read_field_lines_until_crlf(client)
     -- don't do anything with these. but we have them anyway
     -- remove chunked from Transfer-Encoding
-    headers["Transfer-Encoding"][#headers["Transfer-Encoding"]] = nil
+    headers["transfer-encoding"][#headers["transfer-encoding"]] = nil
   end
 
   -- log body
@@ -480,15 +456,16 @@ function process_incoming(client, first_line)
   local processed_body = body
 
   -- TEMPORARILY set everything to respond 200
-  response_code = 200
+  response["code"] = 200
 
   -- emulating page for test suite, for now
   if true then
-    response_code = 200
-    response_body = "method token: " .. method_token .. "<br>request target: " .. request_target .. "<br>protocol version: " .. protocol_version
-    response_body = response_body .. "<br>absolute uri: " .. target_uri
+    response["code"] = 200
+    response["body"] = "method token: " .. method_token .. "<br>request target: " .. request_target .. "<br>protocol version: " .. protocol_version
+    response["body"] = response["body"] .. "<br>absolute uri: " .. target_uri
     --response_body = response_body .. "<img src='pic_trulli.jpg' alt='Italian Trulli'><img src='pic_trulldi.jpg' alt='Italian Trulli'><img src='pic_trulsli.jpg' alt='Italian Trulli'><img src='pic_trulcli.jpg' alt='Italian Trulli'><img src='pic_trullpli.jpg' alt='Italian Trulli'>"
-    response_body = response_body .. "<br>"
+    response["body"] = response["body"] .. "<br>"
+    -- print headers
     for key, value in pairs(headers) do
       if type(value) == "table" then
         local new_value = ""
@@ -498,35 +475,29 @@ function process_incoming(client, first_line)
         end
         value = new_value
       end
-      response_body = response_body .. "<br>" .. key .. ": " .. value
+      response["body"] = response["body"] .. "<br>" .. key .. ": " .. value
     end
-    response_body = response_body .. "<br>"
-    response_body = response_body .. "<br>body_length: " .. body_length
-    if body ~= nil then response_body = response_body .. "<br>body: " .. body else response_body = response_body .. "<br>body: nil" end
-    response_fields["Content-Length"] = response_body:len()
+    response["body"] = response["body"] .. "<br>"
+    response["body"] = response["body"] .. "<br>body_length: " .. body_length
+    if body ~= nil then response["body"] = response["body"] .. "<br>body: " .. body else response["body"] = response["body"] .. "<br>body: nil" end
+    response["field"]["Content-Length"] = response["body"]:len()
   end
 
   return response
 end
 
-function send_response(response)
+function send_response(client, response)
   -- finalize and send response
-  -- persistence handling (9.3)
-  -- TODO move
-  local connection_close = headers["Connection"] == "close"
-  local http_11_continue = (protocol_version == "HTTP/1.1")
-  local http_10_continue = (protocol_version == "HTTP/1.0" and headers["Connection"] == "keep-alive")
-  if connection_close or not (http_11_continue or http_10_continue) then response_fields["Connection"] = "close" end
 
   -- send blank Transfer-Encodings to imply chunked allowed (7.4)
-  response_fields["Transfer-Encoding"] = ""
-  if response_fields["Connection"] == nil then response_fields["Connection"] = "" end
+  response["field"]["Transfer-Encoding"] = ""
+  if response["field"]["Connection"] == nil then response["field"]["Connection"] = "" end
 
   -- construct and send response message
-  construct_and_send_response(client, response_code, response_fields, response_body)
+  construct_and_send_response(client, response)
 
   -- follow through on persistence (9.3)
-  return response_fields["Connection"] == "close"
+  return response["field"]["Connection"] == "close"
 end
 
 -- TODO: implement 9.5 graceful timeouts
@@ -561,10 +532,9 @@ while 1 do
       line, err = receive_sanitized(connection)
       if not err then
         -- we have a start line, move on
-        -- TODO: functionise everything after this point so our flow is less fucked and we can handle all incoming data in a row
-        response = process_incoming(connection, line)
-        close_connection = send_response(response)
-        if close_connection then close_connection(connection, connections) end
+        local response = process_incoming(connection, line)
+        local should_close = send_response(connection, response)
+        if should_close then close_connection(connection, connections) end
       elseif err == "closed" then
         close_connection(connection, connections)
       end
