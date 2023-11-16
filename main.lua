@@ -14,6 +14,7 @@ local FIELD_VCHAR <const> = "[" .. VCHAR .. OBS_TEXT .. "]"
 -- so far implemented:
 local COMMA_SEPARATED_HEADERS <const> = {["transfer-encoding"] = true, ["content-length"] = true}
 -- local SEMICOLON_SEPARATED_HEADERS <const> = {["prefer"] = true, [ "content-type"] = true, ["cookie"] = true}
+local RESPONSE_TEMPLATE <const> = {["field"] = {}}
 
 local packet_num = 0
 
@@ -24,6 +25,21 @@ local packet_num = 0
 -- implementation steps, https://stackoverflow.com/questions/176409/build-a-simple-http-server-in-c
 -- http made really easy, https://www.jmarshall.com/easy/http/
 -- http rfc, https://datatracker.ietf.org/doc/html/rfc9112#line.folding
+
+function close_connection(connections, closing_connection)
+  for k, connection in pairs(connections) do
+    if connection == closing_connection then
+      connection:shutdown()
+      connections[k] = nil 
+    end
+  end
+end
+
+function code_400(current_response, close)
+  current_response["code"] = 400
+  if close then current_response["field"]["Connection"] = "close" end
+  return current_response
+end
 
 function match_field_content(field_content)
   local char_found
@@ -91,6 +107,7 @@ function reconstruct_target_uri(method_token, request_target, fixed_uri_scheme, 
 end
 
 function write_sanitized_field(fields, field_name, field_value)
+  -- TODO: finish this
   -- sanitizes bare cr and 
 end
 
@@ -107,10 +124,6 @@ function parse_start_line(start_line)
   -- see https://stackoverflow.com/questions/1426954/split-string-in-lua
   local tokens = string.gmatch(start_line,"[^ \t]+")
   return tokens(), tokens(), tokens()
-end
-
-function test()
-
 end
 
 function parse_field_line(field_line, table_to_append_to)
@@ -140,13 +153,14 @@ function read_field_lines_until_crlf(client, disallow_leading_whitespace)
   -- get first line
   while 1 do
     line, err = receive_sanitized(client)
+    if err then return nil, "[!] ERR: no field lines found (read_field_lines_until_crlf)" end
     local first_char = line:sub(1, 1)
     if not err then
       if line == "" then
         if buffer ~= nil then
           local parsed_lines, err = parse_field_line(buffer, field_lines)
           if err then return nil, err
-          elseif parsed_lines == nil then return nil, "[!] ERR: null lines parsed when reading field lines until crlf, aborting" end
+          elseif parsed_lines == nil then return nil, "[!] ERR: null lines parsed when reading field lines (read_field_lines_until_crlf)" end
         end
         break
       elseif buffer == nil then
@@ -158,7 +172,7 @@ function read_field_lines_until_crlf(client, disallow_leading_whitespace)
       else
         local parsed_lines, err = parse_field_line(buffer, field_lines)
         if err then return nil, err
-        elseif parsed_lines == nil then return nil, "[!] ERR: null lines parsed when reading field lines until crlf, aborting" end
+        elseif parsed_lines == nil then return nil, "[!] ERR: null lines parsed when reading field lines (read_field_lines_until_crlf)" end
         buffer = line
       end
     end
@@ -220,6 +234,7 @@ function construct_and_send_response(client, response)
     if type(value) == "table" then
       value = table.concat(value, " | ")
     end
+
     print(key .. ": " .. value)
   end
   print("-------[DUMPED RESPONSE BODY]-------")
@@ -265,17 +280,6 @@ function parse_html_time(html_time)
   -- html-time regex: (Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} (2[0-4]|[0-1][0-9]):[0-5][0-9]:(60|[0-5][0-9]) GMT
 end
 
-function close_connection(client, connections)
-  -- close connection and remove from list
-  client:shutdown()
-  for i, connection in ipairs(connections) do
-    if connection == client then
-      table.remove(connections, i)
-      break
-    end
-  end
-end
-
 function process_incoming(client, line)
   -- if we don't have a line, go back
   -- this will be less dumb after refactor
@@ -296,12 +300,14 @@ function process_incoming(client, line)
   local count = 0
   while line == "" do
     line, err = receive_sanitized(client)
+    if err then
+      print("[!] ERR: during processing of pre-header crlf: " .. err)
+      return code_400(response, true)
+    end
     count = count + 1
     if count > 15 then
       print("crlf count passed 15 limit whilst receiving, aborting")
-      response["code"] = 400
-      response["field"]["Connection"] = "close"
-      return response
+      return code_400(response, true)
     end
   end
   local method_token, request_target, protocol_version
@@ -318,9 +324,7 @@ function process_incoming(client, line)
   local headers, err = read_field_lines_until_crlf(client, true)
   if err then
     print(err)
-    response["code"] = 400
-    response["field"]["Connection"] = "close"
-    return response
+    return code_400(response, true)
   end
   -- define header field values
   headers = define_field_values(headers)
@@ -339,9 +343,7 @@ function process_incoming(client, line)
   local target_uri, err = reconstruct_target_uri(method_token, request_target, nil, headers["host"])
   if err then
     print(err)
-    response["code"] = 400
-    response["field"]["Connection"] = "close"
-    return response
+    return code_400(response, true)
   end
 
   -- determine how to read the body
@@ -363,35 +365,31 @@ function process_incoming(client, line)
       decode_method = "chunked"
     else
       print("last encoding was not chunked, aborting")
-      response["code"] = 400
-      response["field"]["Connection"] = "close"
-      return response
+      return code_400(response, true)
     end
-  elseif headers["Content-Length"] ~= nil then
+  elseif headers["content-length"] ~= nil then
     -- list validity check (6.3)
     for i, v in ipairs(headers["content-length"]) do
       for k, x in ipairs(headers["content-length"]) do
         if v ~= x then
           print("length was list but was not valid, aborting")
-          response["code"] = 400
-          response["field"]["Connection"] = "close"
-          return response
+          return code_400(response, true)
         end
       end
     end
     -- if valid continue
     decode_method = "length"
-    body_length = headers["content-length"]
+    body_length = headers["content-length"][1]
   else body_length = 0 end
 
   -- persistence handling (9.3)
-  local connection_close = headers["Connection"] == "close"
+  local connection_close = headers["connection"] == "close"
   local http_11_continue = (protocol_version == "HTTP/1.1")
-  local http_10_continue = (protocol_version == "HTTP/1.0" and headers["Connection"] == "keep-alive")
+  local http_10_continue = (protocol_version == "HTTP/1.0" and headers["connection"] == "keep-alive")
   if connection_close or not (http_11_continue or http_10_continue) then response["field"]["Connection"] = "close" end
 
   -- continue implementation
-  if headers["Expect"] == "100-continue" then respond_with_100(client, protocol_version) end
+  if headers["expect"] == "100-continue" then respond_with_100(client, protocol_version) end
 
   -- read body
   -- TODO: handle incomplete messages (8)
@@ -399,6 +397,9 @@ function process_incoming(client, line)
   if decode_method == "length" and body_length ~= nil and body_length ~= 0 then
     -- length decoding
     body, err = client:receive(body_length)
+    if err or body:len() ~= body_length then
+      return code_400(response, true)
+    end
   elseif decode_method == "chunked" then
     -- chunked decoding
     -- read chunks
@@ -407,9 +408,7 @@ function process_incoming(client, line)
     local chunk_header, err = receive_sanitized(client)
     if err then
       print(err)
-      response["code"] = 400
-      response["field"]["Connection"] = "close"
-      return response
+      return code_400(response, true)
     end
     local tokens = string.gmatch(chunk_header,"[^%s]+")
     local chunk_size, chunk_ext = tonumber(tokens()), tokens()
@@ -419,9 +418,7 @@ function process_incoming(client, line)
       local chunk_data, err = client:receive(chunk_size+2)
       if err then
         print(err)
-        response["code"] = 400
-        response["field"]["Connection"] = "close"
-        return response
+        return code_400(response, true)
       end
       body = body .. string.sub(chunk_data,1,-3)
       print("chunk_data: " .. chunk_data)
@@ -513,16 +510,27 @@ local connections = {server}
 -- print a message informing what's up
 print("server started on localhost port " .. port)
 -- loop forever waiting for clients
-local packet_num = 0
 while 1 do
   
   -- wait for a socket to have something to read
-  local readable_sockets, trash, err = socket.select(connections, nil)
+  print("waiting...")
+  for k, v in ipairs(connections) do print("connection " .. k .. ": " .. tostring(v:dirty())) end
+  local readable_sockets, _, err = socket.select(connections, nil)
+
+  for i, connection in ipairs(connections) do
+    print("in array as ".. i .. ": ")
+    print(connections[i])
+  end
   
   -- iterate all existing connections to check what we need to do
-  local line, err, client
+  local line, err
   for i, connection in ipairs(readable_sockets) do
+    print("handling: ")
+    print(connection)
+    print("server: ")
+    print(server)
     if connection == server then
+      print("hello")
       -- accept the incoming connection
       local new_connection = server:accept()
       new_connection:settimeout(0.2)
@@ -534,9 +542,15 @@ while 1 do
         -- we have a start line, move on
         local response = process_incoming(connection, line)
         local should_close = send_response(connection, response)
-        if should_close then close_connection(connection, connections) end
+        if should_close then close_connection(connections, connection) end
       elseif err == "closed" then
-        close_connection(connection, connections)
+        -- clean shutdown connections
+        close_connection(connections, connection)
+      else
+        -- reset connection
+        print("error: " .. err)
+        send_response(connection, code_400(RESPONSE_TEMPLATE, true))
+        close_connection(connections, connection)
       end
     end
   end

@@ -21,6 +21,7 @@ function parse_field_line(field_line, table_to_append_to)
 function get_client_response(client)
     -- parse first line
     local line, err = client:receive()
+    if err then print(err) end
     local tokens = string.gmatch(line,"[^%s]+")
     local protocol_version = tokens()
     local code = tokens()
@@ -144,6 +145,62 @@ client:send(test_request)
 local first_line, headers, body, output = get_client_response(client)
 assert(string.find(body, "hello server") ~= nil and first_line["response_code"] == 200, build_failure_message(test_message, output))
 print("PASSED: " .. test_message)
+
+test_message = "Testing timeouts: start line, no crln"
+test_request = "GET /test.html"
+client:send(test_request)
+local first_line, headers, body, output = get_client_response(client)
+assert(first_line["response_code"] == 400, build_failure_message(test_message, output))
+print("PASSED: " .. test_message)
+client = socket.connect("localhost", port)
+
+test_message = "Testing timeouts: start line, crln"
+test_request = "GET /test.html HTTP/1.1\r\n"
+print("error: " .. client:send(test_request))
+local first_line, headers, body, output = get_client_response(client)
+assert(first_line["response_code"] == 400, build_failure_message(test_message, output))
+print("PASSED: " .. test_message)
+client = socket.connect("localhost", port)
+
+test_message = "Testing timeouts: headers, no crln"
+test_request = "GET /test.html HTTP/1.1\r\nTransfer-Encoding: chunked\r\nHost: localhost"
+client:send(test_request)
+local first_line, headers, body, output = get_client_response(client)
+assert(first_line["response_code"] == 400, build_failure_message(test_message, output))
+print("PASSED: " .. test_message)
+client = socket.connect("localhost", port)
+
+test_message = "Testing timeouts: headers, chunked, crln"
+test_request = "GET /test.html HTTP/1.1\r\nTransfer-Encoding: chunked\r\nHost: localhost\r\n"
+client:send(test_request)
+local first_line, headers, body, output = get_client_response(client)
+assert(first_line["response_code"] == 400, build_failure_message(test_message, output))
+print("PASSED: " .. test_message)
+client = socket.connect("localhost", port)
+
+test_message = "Testing timeouts: headers, length, crln"
+test_request = "GET /test.html HTTP/1.1\r\nContent-Length: 100\r\nHost: localhost\r\n"
+client:send(test_request)
+local first_line, headers, body, output = get_client_response(client)
+assert(first_line["response_code"] == 400, build_failure_message(test_message, output))
+print("PASSED: " .. test_message)
+client = socket.connect("localhost", port)
+
+test_message = "Testing timeouts: headers, chunked, double crln"
+test_request = "GET /test.html HTTP/1.1\r\nTransfer-Encoding: chunked\r\nHost: localhost\r\n\r\n"
+client:send(test_request)
+local first_line, headers, body, output = get_client_response(client)
+assert(first_line["response_code"] == 400, build_failure_message(test_message, output))
+print("PASSED: " .. test_message)
+client = socket.connect("localhost", port)
+
+test_message = "Testing timeouts: headers, length, double crln"
+test_request = "GET /test.html HTTP/1.1\r\nContent-Length: 100\r\nHost: localhost\r\n\r\n"
+client:send(test_request)
+local first_line, headers, body, output = get_client_response(client)
+assert(first_line["response_code"] == 400, build_failure_message(test_message, output))
+print("PASSED: " .. test_message)
+client = socket.connect("localhost", port)
 
 print ("---------------------------------------")
 print ("!!         ALL TESTS PASSED          !!")
