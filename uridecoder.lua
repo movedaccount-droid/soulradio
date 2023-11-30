@@ -180,36 +180,39 @@ uridecoder.match_hier_part = function(hier_part)
         local authority, authority_end
         _, authority_end, authority = hier_part:find("([^%/]*)")
         if not uridecoder.match_authority(authority) then return false end
-        return uridecoder.match_path_abempty(hier_part:sub(authority_end + 1, -1))
-    else return uridecoder.match_path_absolute(hier_part) or uridecoder.match_path_rootless(hier_part) or hier_part:find("^" .. PATH_EMPTY .. "$") ~= nil end
+        hier_part = hier_part:sub(authority_end + 1, -1)
+        return uridecoder.match_path_abempty(hier_part), hier_part, authority
+    else return uridecoder.match_path_absolute(hier_part) or uridecoder.match_path_rootless(hier_part) or hier_part:find("^" .. PATH_EMPTY .. "$") ~= nil, hier_part end
 end
 
 uridecoder.match_relative_ref = function(relative_ref)
-    local fragment_start = relative_ref:find("%#" .. FRAGMENT .. "$")
+    local fragment_start, _, fragment = relative_ref:find("%#(" .. FRAGMENT .. ")$")
     if fragment_start ~= nil then relative_ref = relative_ref:sub(1, fragment_start - 1) end
-    local query_start = relative_ref:find("%?" .. QUERY .. "$")
+    local query_start, _, query = relative_ref:find("%?(" .. QUERY .. ")$")
     if query_start ~= nil then relative_ref = relative_ref:sub(1, query_start - 1) end
-    return uridecoder.match_relative_part(relative_ref)
+    return uridecoder.match_relative_part(relative_ref), relative_ref, query, fragment
 end
 
 uridecoder.match_uri = function(uri)
-    local scheme_end
-    _, scheme_end = uri:find("^" .. SCHEME .. "%:")
+    local _, scheme_end, scheme = uri:find("^(" .. SCHEME .. ")%:")
     if scheme_end == nil then return false end
     uri = uri:sub(scheme_end + 1, -1)
-    local fragment_start = uri:find("%#" .. FRAGMENT .. "$")
+    local fragment_start, _, fragment = uri:find("%#(" .. FRAGMENT .. ")$")
     if fragment_start ~= nil then uri = uri:sub(1, fragment_start - 1) end
-    local query_start = uri:find("%?" .. QUERY .. "$")
+    local query_start, _, query = uri:find("%?(" .. QUERY .. ")$")
     if query_start ~= nil then uri = uri:sub(1, query_start - 1) end
-    return uridecoder.match_hier_part(uri)
+    local is_hier_part, hier_part, authority = uridecoder.match_hier_part(uri)
+    return is_hier_part, scheme, authority, hier_part, query, fragment
 end
 
 uridecoder.match_absolute_uri = function(absolute_uri)
-    local port_found
-    absolute_uri, port_found = absolute_uri:gsub("^" .. SCHEME .. "%:", "")
-    if port_found == 0 then return false end
-    absolute_uri = absolute_uri:gsub("%?" .. QUERY .. "$", "")
-    return uridecoder.match_hier_part(absolute_uri)
+    local _, scheme_end, scheme = absolute_uri:find("^(" .. SCHEME .. ")%:")
+    if scheme_end == nil then return false end
+    absolute_uri = absolute_uri:sub(scheme_end - 1, -1)
+    local query_start, _, query = absolute_uri:find("%?(" .. QUERY .. ")$")
+    if query_start ~= nil then absolute_uri = absolute_uri:sub(1, query_start - 1) end
+    local is_hier_part, hier_part, authority = uridecoder.match_hier_part(absolute_uri)
+    return is_hier_part, authority, scheme, hier_part, query
 end
 
 uridecoder.match_http_absolute_path = function(http_absolute_path)
@@ -219,8 +222,9 @@ uridecoder.match_http_absolute_path = function(http_absolute_path)
 end
 
 uridecoder.match_http_origin_form = function(http_origin_form)
-    http_origin_form = http_origin_form:gsub("%?" .. QUERY .. "$", "")
-    return uridecoder.match_http_absolute_path(http_origin_form)
+    local query_start, _, query = http_origin_form:find("%?(" .. QUERY .. ")$")
+    if query_start ~= nil then http_origin_form = http_origin_form:sub(1, query_start - 1) end
+    return uridecoder.match_http_absolute_path(http_origin_form), http_origin_form, query
 end
 
 uridecoder.match_http_authority_form = function(http_authority_form)

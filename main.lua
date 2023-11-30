@@ -1,5 +1,6 @@
 package.path = "../?.lua;" .. package.path
 require "uridecoder"
+require "backend"
 
 local OWS <const> = " 	"
 local TCHAR <const> = "%!%#%$%%%&%'%*%+%-%.%6%_%`%|%~%d%a"
@@ -73,37 +74,51 @@ end
 
 function reconstruct_target_uri(method_token, request_target, fixed_uri_scheme, host_header_field_value)
   -- determine uri form
-  local uri_form
-  if uridecoder.match_http_origin_form(request_target) then uri_form = "origin-form"
-  elseif uridecoder.match_http_authority_form(request_target) and method_token == "CONNECT" then uri_form = "authority-form"
-  elseif uridecoder.match_http_absolute_form(request_target) then uri_form = "absolute-form"
-  elseif uridecoder.match_http_asterisk_form(request_target) then uri_form = "asterisk-form"
-  else return nil, "target uri failed to match any known format during reconstruction"
+  local uri = {}
+  if uridecoder.match_http_origin_form(request_target) then uri["uri_form"] = "origin-form"
+  elseif uridecoder.match_http_authority_form(request_target) and method_token == "CONNECT" then uri["uri_form"] = "authority-form"
+  elseif uridecoder.match_http_absolute_form(request_target) then uri["uri_form"] = "absolute-form"
+  elseif uridecoder.match_http_asterisk_form(request_target) then uri["uri_form"] = "asterisk-form"
+  else return nil, "[?] WRN in reconstruct_target_uri: target uri failed to match any known format during reconstruction"
   end
 
-  -- return early for absolute-form
-  if uri_form == "absolute-form" then return request_target end
+  -- parse generic components and return early for absolute-form
+  if uri["uri_form"] == "absolute-form" then
+    uri["target"] = request_target
+    _, uri["authority"], uri["scheme"], uri["path"], uri["query"] = uridecoder.match_http_absolute_form(request_target)
+    if uri["query"] then uri["combined_path_and_query_component"] = uri["path"] .. uri["query"]
+    else uri["combined_path_and_query_component"] = uri["path"] end
+    return uri
+  end
+
   -- determine scheme
-  local scheme
-  if fixed_uri_scheme ~= nil then scheme = fixed_uri_scheme
-  else scheme = "http" end -- no implementation for https, no need to check for it
+  if fixed_uri_scheme ~= nil then uri["scheme"] = fixed_uri_scheme
+  else uri["scheme"] = "http" end -- no implementation for https -> no check
 
   -- determine authority
-  local authority
-  if uri_form == "authority-form" then authority = request_target
-  elseif type(host_header_field_value) == "string" and uridecoder.match_http_uri_host(host_header_field_value) then authority = host_header_field_value
-  else return nil, "request message featured invalid host header field line" end
+  if uri["uri_form"] == "authority-form" then uri["authority"] = request_target
+  elseif type(host_header_field_value) == "string" and uridecoder.match_http_uri_host(host_header_field_value) then uri["authority"] = host_header_field_value
+  else return nil, "[?] WRN in reconstruct_target_uri: request message featured invalid host header field line" end
 
   -- check authority against scheme for compliance
-  if authority == "" and scheme == "http" then return "request target uri authority empty when uri scheme required non-empty authority" end -- "reject request" assumed as 400
+  if uri["authority"] == "" and uri["scheme"] == "http" then return nil, "[?] WRN in reconstruct_target_uri: request target uri authority empty when uri scheme required non-empty authority" end -- "reject request" assumed as 400
   
   -- determine combined path and query component
-  local combined_path_and_query_component
-  if uri_form == "authority-form" or uri_form == "asterisk-form" then combined_path_and_query_component = ""
-  else combined_path_and_query_component = request_target end
+  if uri["uri_form"] == "authority-form" or uri["uri_form"] == "asterisk-form" then uri["combined_path_and_query_component"] = ""
+  else uri["combined_path_and_query_component"] = request_target end
 
-  -- reconstruct absolute-uri form
-  return scheme .. "://" .. authority .. combined_path_and_query_component
+  -- reconstruct absolute-uri form and return uri information
+  uri["path"] = uri["combined_path_and_query_component"] -- TODO: remove query
+  uri["target"] = uri["scheme"] .. "://" .. uri["authority"] .. uri["combined_path_and_query_component"]
+
+  -- extract queries and fragments separately
+  for fragment in uri["combined_path_and_query_component"]:gmatch("#([^#]*)$") do uri["fragment"] = fragment end
+  for query in uri["combined_path_and_query_component"]:gmatch("?([|^#]*).*$") do uri["query"] = query end
+  for path in uri["combined_path_and_query_component"]:gmatch("^([^#?]*)") do uri["path"] = path end
+  for k, v in pairs(uri) do
+    print(k .. ": " .. v)
+  end
+  return uri
 end
 
 function write_sanitized_field(fields, field_name, field_value)
@@ -227,7 +242,7 @@ end
 
 function construct_and_send_response(client, response)
   -- dump response to console
-  print("-------[DUMPED RESPONSE]-------")
+  print("-------[RESPONSE " .. packet_num .. " BEGINS]-------")
   print("code: " .. response["code"])
   print("-------[DUMPED RESPONSE FIELDS]-------")
   for key, value in pairs(response["field"]) do
@@ -239,6 +254,7 @@ function construct_and_send_response(client, response)
   end
   print("-------[DUMPED RESPONSE BODY]-------")
   print(response["body"])
+  print("-------[END OF RESPONSE " .. packet_num .. "]-------\r\n\r\n")
   -- constructing the response message
   -- construct the status line
   local response_string = construct_status_line(response["code"])
@@ -452,14 +468,13 @@ function process_incoming(client, line)
   -- this will likely be handed back somewhere else for processing as we extend from this webserver, so for now we should just skip this.
   local processed_body = body
 
-  -- TEMPORARILY set everything to respond 200
-  response["code"] = 200
 
+  -- hand to backend to generate response
   -- emulating page for test suite, for now
-  if true then
+  if target_uri["path"]:find("test.html") then
     response["code"] = 200
     response["body"] = "method token: " .. method_token .. "<br>request target: " .. request_target .. "<br>protocol version: " .. protocol_version
-    response["body"] = response["body"] .. "<br>absolute uri: " .. target_uri
+    response["body"] = response["body"] .. "<br>absolute uri: " .. target_uri["target"]
     --response_body = response_body .. "<img src='pic_trulli.jpg' alt='Italian Trulli'><img src='pic_trulldi.jpg' alt='Italian Trulli'><img src='pic_trulsli.jpg' alt='Italian Trulli'><img src='pic_trulcli.jpg' alt='Italian Trulli'><img src='pic_trullpli.jpg' alt='Italian Trulli'>"
     response["body"] = response["body"] .. "<br>"
     -- print headers
@@ -477,8 +492,39 @@ function process_incoming(client, line)
     response["body"] = response["body"] .. "<br>"
     response["body"] = response["body"] .. "<br>body_length: " .. body_length
     if body ~= nil then response["body"] = response["body"] .. "<br>body: " .. body else response["body"] = response["body"] .. "<br>body: nil" end
-    response["field"]["Content-Length"] = response["body"]:len()
+    
+  else
+    if method_token == "GET" then
+      local backend_response = luattp_backend.GET(target_uri["path"])
+        if response["headers"] ~= nil then for k, _ in pairs(response["headers"]) do
+          backend_response["headers"][k] = response["headers"][k]
+        end end
+      response = backend_response
+    end
   end
+
+  -- handle encodings
+  if response["body"] ~= nil then 
+    if response["body"]:len() > 1024 then
+      response["field"]["Transfer-Encoding"] = "chunked"
+      -- encode as chunked due to large size
+      local chunked_body = ""
+      local chunk_index = 1
+      while chunk_index < response["body"]:len() do
+        -- get chunk
+        local chunk = response["body"]:sub(chunk_index, chunk_index + 1023)
+        chunk_index = chunk_index + 1024
+        -- append to new body
+        local chunk_size = string.format("%x", chunk:len())
+        chunked_body = chunked_body .. chunk_size .. "\r\n" .. chunk .. "\r\n"
+      end
+      -- append last chunk of 0
+      chunked_body = chunked_body .. "0\r\n\r\n"
+      response["body"] = chunked_body
+    else
+      response["field"]["Content-Length"] = response["body"]:len()
+    end
+  else response["field"]["Content-Length"] = 0 end
 
   return response
 end
@@ -487,7 +533,7 @@ function send_response(client, response)
   -- finalize and send response
 
   -- send blank Transfer-Encodings to imply chunked allowed (7.4)
-  response["field"]["Transfer-Encoding"] = ""
+  if response["field"]["Transfer-Encoding"] == nil then response["field"]["Transfer-Encoding"] = "" end
   if response["field"]["Connection"] == nil then response["field"]["Connection"] = "" end
 
   -- construct and send response message
@@ -514,23 +560,12 @@ while 1 do
   
   -- wait for a socket to have something to read
   print("waiting...")
-  for k, v in ipairs(connections) do print("connection " .. k .. ": " .. tostring(v:dirty())) end
   local readable_sockets, _, err = socket.select(connections, nil)
-
-  for i, connection in ipairs(connections) do
-    print("in array as ".. i .. ": ")
-    print(connections[i])
-  end
   
   -- iterate all existing connections to check what we need to do
   local line, err
   for i, connection in ipairs(readable_sockets) do
-    print("handling: ")
-    print(connection)
-    print("server: ")
-    print(server)
     if connection == server then
-      print("hello")
       -- accept the incoming connection
       local new_connection = server:accept()
       new_connection:settimeout(0.2)
