@@ -1,6 +1,7 @@
 package.path = "../?.lua;" .. package.path
 require "uridecoder"
 require "backend"
+require "utils"
 
 local OWS <const> = " 	"
 local TCHAR <const> = "%!%#%$%%%&%'%*%+%-%.%6%_%`%|%~%d%a"
@@ -231,7 +232,7 @@ end
 function construct_status_line(code)
   local protocol_version = "HTTP/1.1"
   -- lookup the status text against the code
-  local status_text_lookup <const> = {[200] = "OK", [404] = "Not Found", [100] = "Continue", [400] = "Bad Request", [501] = "Not Implemented"}
+  local status_text_lookup <const> = {[200] = "OK", [206] = "Partial Content", [404] = "Not Found", [416] = "Range Not Satisfiable", [100] = "Continue", [400] = "Bad Request", [501] = "Not Implemented"}
   local status_text = status_text_lookup[code]
   return protocol_version .. " " .. code .. " " .. status_text
 end
@@ -253,7 +254,11 @@ function construct_and_send_response(client, response)
     print(key .. ": " .. value)
   end
   print("-------[DUMPED RESPONSE BODY]-------")
-  print(response["body"])
+  if response["body"] ~= nil and string.len(response["body"]) > 8196 then
+    print(response["body"]:sub(1, 8196) .. "<snip>")
+  else
+    print(response["body"])
+  end
   print("-------[END OF RESPONSE " .. packet_num .. "]-------\r\n\r\n")
   -- constructing the response message
   -- construct the status line
@@ -272,19 +277,6 @@ function construct_and_send_response(client, response)
   client:send(response_string)
 end
 
-function update_validators(resource_table, resource, modified_timestamp)
-  -- TODO: make backend push updates here
-  -- TODO: what is the resource_table? where is it stored?
-  -- resource table: resource_uri, last_modified, etag
-  resource_table[resource]["last_modified"] = modified_timestamp
-  -- TODO: may be necessary to make this modular, i.e. choose between node updates and hashes
-  resource_table[resource]["etag"] = resource_table[resource]["etag"] + 1
-end
-
-function get_validators(resource_table, resource)
-  return resource_table[resource]["last_modified"], resource_table[resource]["etag"]
-end
-
 function get_html_time(unix_time_seconds)
   -- ex. Sun, 06 Nov 1994 08:49:37 GMT
   if unix_time_seconds == nil then return os.date("%a, %d %b %Y %H:%M:%S GMT")
@@ -296,15 +288,28 @@ function parse_html_time(html_time)
   -- html-time regex: (Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} (2[0-4]|[0-1][0-9]):[0-5][0-9]:(60|[0-5][0-9]) GMT
 end
 
+function merge_response_message(overwritten_message, new_message)
+  if new_message["code"] ~= nil then overwritten_message["code"] = new_message["code"] end
+  if new_message["body"] ~= nil then overwritten_message["body"] = new_message["body"] end
+  overwritten_message["field"] = merge_field_lines(overwritten_message["field"], new_message["field"])
+  return overwritten_message
+end
+
+function merge_field_lines(overwritten_lines, new_lines)
+  -- takes two tables of field lines and recursively merges second onto first, overwriting if necessary
+  if new_lines ~= nil then for k, _ in pairs(new_lines) do
+    overwritten_lines[k] = new_lines[k]
+  end end
+  return overwritten_lines
+end
+
 function process_incoming(client, line)
   -- if we don't have a line, go back
-  -- this will be less dumb after refactor
   if line == nil then return nil, "no line found" end
 
   -- initiate variables for server response
   -- should contain line, fields, body
-  local response = {}
-  response["field"] = {}
+  local response = luattp_utils.copy_table(RESPONSE_TEMPLATE)
 
   -- logging
   packet_num = packet_num + 1
@@ -492,39 +497,38 @@ function process_incoming(client, line)
     response["body"] = response["body"] .. "<br>"
     response["body"] = response["body"] .. "<br>body_length: " .. body_length
     if body ~= nil then response["body"] = response["body"] .. "<br>body: " .. body else response["body"] = response["body"] .. "<br>body: nil" end
-    
   else
     if method_token == "GET" then
-      local backend_response = luattp_backend.GET(target_uri["path"])
-        if response["headers"] ~= nil then for k, _ in pairs(response["headers"]) do
-          backend_response["headers"][k] = response["headers"][k]
-        end end
-      response = backend_response
+      local backend_response = luattp_backend.GET(target_uri["path"], false, headers["range"])
+      response = merge_response_message(backend_response, response)
+    elseif method_token == "HEAD" then
+      local backend_response = luattp_backend.HEAD(target_uri["path"])
+      response = merge_response_message(backend_response, response)
     end
   end
 
   -- handle encodings
-  if response["body"] ~= nil then 
-    if response["body"]:len() > 1024 then
-      response["field"]["Transfer-Encoding"] = "chunked"
+  if response["field"]["Content-Length"] == nil then response["field"]["Content-Length"] = 0 end
+  if response["field"]["Content-Length"] > 1024 then
+    response["field"]["Transfer-Encoding"] = "chunked"
+    if method_token ~= "HEAD" then
       -- encode as chunked due to large size
-      local chunked_body = ""
+      local chunked_body = {}
       local chunk_index = 1
-      while chunk_index < response["body"]:len() do
+      local body_length = response["body"]:len()
+      while chunk_index < body_length do
         -- get chunk
         local chunk = response["body"]:sub(chunk_index, chunk_index + 1023)
         chunk_index = chunk_index + 1024
         -- append to new body
         local chunk_size = string.format("%x", chunk:len())
-        chunked_body = chunked_body .. chunk_size .. "\r\n" .. chunk .. "\r\n"
+        table.insert(chunked_body, chunk_size .. "\r\n" .. chunk .. "\r\n")
       end
       -- append last chunk of 0
-      chunked_body = chunked_body .. "0\r\n\r\n"
-      response["body"] = chunked_body
-    else
-      response["field"]["Content-Length"] = response["body"]:len()
+      table.insert(chunked_body, "0\r\n\r\n")
+      response["body"] = table.concat(chunked_body, "")
     end
-  else response["field"]["Content-Length"] = 0 end
+  end
 
   return response
 end
@@ -535,6 +539,7 @@ function send_response(client, response)
   -- send blank Transfer-Encodings to imply chunked allowed (7.4)
   if response["field"]["Transfer-Encoding"] == nil then response["field"]["Transfer-Encoding"] = "" end
   if response["field"]["Connection"] == nil then response["field"]["Connection"] = "" end
+  if response["field"]["ETag"] == nil then response["field"]["ETag"] = "1" end
 
   -- construct and send response message
   construct_and_send_response(client, response)
@@ -560,6 +565,9 @@ while 1 do
   
   -- wait for a socket to have something to read
   print("waiting...")
+  for k, v in pairs(connections) do
+    print(k, v)
+  end
   local readable_sockets, _, err = socket.select(connections, nil)
   
   -- iterate all existing connections to check what we need to do
@@ -567,6 +575,7 @@ while 1 do
   for i, connection in ipairs(readable_sockets) do
     if connection == server then
       -- accept the incoming connection
+      print("accepting...")
       local new_connection = server:accept()
       new_connection:settimeout(0.2)
       table.insert(connections, new_connection)
@@ -574,15 +583,18 @@ while 1 do
       -- read the incoming line
       line, err = receive_sanitized(connection)
       if not err then
+        print("read start line...")
         -- we have a start line, move on
         local response = process_incoming(connection, line)
         local should_close = send_response(connection, response)
         if should_close then close_connection(connections, connection) end
       elseif err == "closed" then
+        print("closing...")
         -- clean shutdown connections
         close_connection(connections, connection)
       else
         -- reset connection
+        print("resetting...")
         print("error: " .. err)
         send_response(connection, code_400(RESPONSE_TEMPLATE, true))
         close_connection(connections, connection)
