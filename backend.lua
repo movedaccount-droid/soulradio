@@ -164,7 +164,7 @@ luattp_backend.conf_path = "/home/sk/Documents/1-lua/soulradio/luattp.conf"
 print("starting backend serving path " .. luattp_backend.conf_path)
 local err
 luattp_backend.config, err = luattp_backend.parse_conf(luattp_backend.conf_path)
-if err then console.log(err) end
+if err then print(err) end
 print("------- config ------- ")
 for k, v in pairs(luattp_backend.config) do
     print(k .. ": " .. v)
