@@ -68,7 +68,9 @@ luattp_backend.get_mime_type = function(relative_uri)
         ["webp"] = "image/webp",
         ["wav"] = "audio/wav",
         ["ogg"] = "audio/ogg",
-        ["mp3"] = "audio/mpeg"
+        ["mp3"] = "audio/mpeg",
+        ["m3u8"] = "audio/mpegURL",
+        ["ts"] = "video/MP2T",
     }
 
     local mime_type = mime_types[extension]
@@ -126,8 +128,9 @@ luattp_backend.GET = function(relative_uri, HEAD, range)
                 get_response["body"] = "BYTE_BOUNDARY_C00TTON_BULL0CK"
                 for _, range in ipairs(parsed_ranges) do
                     -- get data for range
-                    file:seek(set, range["start"])
-                    local range_payload = file:read(range["end"] - range["start"])
+                    file:seek(set, range["start"] - 1)
+                    print(range["end"] - range["start"],range["start"],range["end"])
+                    local range_payload = file:read(range["end"] - range["start"] + 1)
                     get_response["body"] = get_response["body"] .. "\nContent-Type: " .. file_mime
                     get_response["body"] = get_response["body"] .. "\nContent-Range: bytes " .. range["start"] .. "-" .. range["end"] .. "/" .. file_length .. ""
                     get_response["body"] = get_response["body"] .. "\n\n"
@@ -160,7 +163,7 @@ luattp_backend.POST = function(relative_uri)
 end
 
 -- initialize
-luattp_backend.conf_path = "/home/sk/Documents/1-lua/soulradio/luattp.conf"
+luattp_backend.conf_path = "./luattp.conf"
 print("starting backend serving path " .. luattp_backend.conf_path)
 local err
 luattp_backend.config, err = luattp_backend.parse_conf(luattp_backend.conf_path)

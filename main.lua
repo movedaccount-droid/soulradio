@@ -2,6 +2,9 @@ package.path = "../?.lua;" .. package.path
 require "uridecoder"
 require "backend"
 require "utils"
+-- load namespace
+local socket = require("socket")
+local ltn12 = require("ltn12")
 
 local OWS <const> = " 	"
 local TCHAR <const> = "%!%#%$%%%&%'%*%+%-%.%6%_%`%|%~%d%a"
@@ -254,8 +257,8 @@ function construct_and_send_response(client, response)
     print(key .. ": " .. value)
   end
   print("-------[DUMPED RESPONSE BODY]-------")
-  if response["body"] ~= nil and string.len(response["body"]) > 8196 then
-    print(response["body"]:sub(1, 8196) .. "<snip>")
+  if response["body"] ~= nil and string.len(response["body"]) > 1024 then
+    print(response["body"]:sub(1, 1024) .. "<snip>")
   else
     print(response["body"])
   end
@@ -274,7 +277,10 @@ function construct_and_send_response(client, response)
   -- construct the body
   if response["body"] ~= nil then response_string = response_string .. response["body"] end
   -- send
-  client:send(response_string)
+  sink = socket.sink("keep-open", client)
+  source = ltn12.source.string(response_string)
+  ltn12.pump.all(source, sink)
+  --client:send(response_string)
 end
 
 function get_html_time(unix_time_seconds)
@@ -511,6 +517,7 @@ function process_incoming(client, line)
   if response["field"]["Content-Length"] == nil then response["field"]["Content-Length"] = 0 end
   if response["field"]["Content-Length"] > 1024 then
     response["field"]["Transfer-Encoding"] = "chunked"
+    response["field"]["Content-Length"] = nil
     if method_token ~= "HEAD" then
       -- encode as chunked due to large size
       local chunked_body = {}
@@ -550,15 +557,13 @@ end
 
 -- TODO: implement 9.5 graceful timeouts
 
--- load namespace
-local socket = require("socket")
--- create a TCP socket and bind it to the local host, at any port
+-- create a TCP socket and bind it to localhost:8080
 local server = assert(socket.bind("*", 8080))
 server:settimeout(0.2)
 -- find out which port the OS chose for us
 local ip, port = server:getsockname()
 local connections = {server}
--- print a message informing what's up
+-- print a message informing server start
 print("server started on localhost port " .. port)
 -- loop forever waiting for clients
 while 1 do
@@ -567,6 +572,7 @@ while 1 do
   print("waiting...")
   for k, v in pairs(connections) do
     print(k, v)
+    print(v:dirty())
   end
   local readable_sockets, _, err = socket.select(connections, nil)
   
@@ -578,6 +584,7 @@ while 1 do
       print("accepting...")
       local new_connection = server:accept()
       new_connection:settimeout(0.2)
+      new_connection:setoption('keepalive', true)
       table.insert(connections, new_connection)
     else
       -- read the incoming line
