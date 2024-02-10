@@ -2,6 +2,8 @@ package.path = "../?.lua;" .. package.path
 require "uridecoder"
 require "backend"
 require "utils"
+require "base64"
+require "sha1"
 -- load namespace
 local socket = require("socket")
 local ltn12 = require("ltn12")
@@ -233,11 +235,25 @@ function process_field_list(field_value, delimiter)
 end
 
 function construct_status_line(code)
+
   local protocol_version = "HTTP/1.1"
-  -- lookup the status text against the code
-  local status_text_lookup <const> = {[200] = "OK", [206] = "Partial Content", [404] = "Not Found", [416] = "Range Not Satisfiable", [100] = "Continue", [400] = "Bad Request", [501] = "Not Implemented"}
+
+  local status_text_lookup <const> = {
+    [100] = "Continue",
+    [101] = "Switching Protocols",
+    [200] = "OK",
+    [206] = "Partial Content",
+    [400] = "Bad Request",
+    [404] = "Not Found",
+    [416] = "Range Not Satisfiable",
+    [426] = "Upgrade Required",
+    [501] = "Not Implemented"
+  }
+  
   local status_text = status_text_lookup[code]
-  return protocol_version .. " " .. code .. " " .. status_text
+
+  return "HTTP/1.1 " .. code .. " " .. status_text
+
 end
 
 function construct_field_line(field_name, field_value)
@@ -283,17 +299,6 @@ function construct_and_send_response(client, response)
   --client:send(response_string)
 end
 
-function get_html_time(unix_time_seconds)
-  -- ex. Sun, 06 Nov 1994 08:49:37 GMT
-  if unix_time_seconds == nil then return os.date("%a, %d %b %Y %H:%M:%S GMT")
-  else return os.date("%a, %d %b %Y %H:%M:%S GMT", unix_time_seconds) end
-end
-
-function parse_html_time(html_time)
-  -- TODO: do we even need this??
-  -- html-time regex: (Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} (2[0-4]|[0-1][0-9]):[0-5][0-9]:(60|[0-5][0-9]) GMT
-end
-
 function merge_response_message(overwritten_message, new_message)
   if new_message["code"] ~= nil then overwritten_message["code"] = new_message["code"] end
   if new_message["body"] ~= nil then overwritten_message["body"] = new_message["body"] end
@@ -308,6 +313,21 @@ function merge_field_lines(overwritten_lines, new_lines)
   end end
   return overwritten_lines
 end
+
+function print_headers(headers)
+  for key, value in pairs(headers) do
+    if type(value) == "table" then
+      value = table.concat(value, " | ")
+    end
+    print(key .. ": " .. value)
+  end
+end
+
+function calculate_sec_websocket_accept(sec_websocket_key)
+  local RFC_APPEND_UUID <const> = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+  return base64.encode(sha1.calculate(sec_websocket_key .. RFC_APPEND_UUID))
+end
+
 
 function process_incoming(client, line)
   -- if we don't have a line, go back
@@ -358,12 +378,7 @@ function process_incoming(client, line)
 
   -- log headers
   print("-------[DUMPED HEADERS]-------")
-  for key, value in pairs(headers) do
-    if type(value) == "table" then
-      value = table.concat(value, " | ")
-    end
-    print(key .. ": " .. value)
-  end
+  print_headers(headers)
 
   -- validate headers
   -- todo; force lowercase headers for case insensitivity if needed
@@ -373,29 +388,36 @@ function process_incoming(client, line)
     return code_400(response, true)
   end
 
-  -- determine how to read the body
-  local body_length, decode_method
+  -- determine how to read the body and its length
+  local decode_method, body_length
   if headers["transfer-encoding"] ~= nil then
-    if headers["content-length"] ~= nil or protocol_version == "HTTP/1.0" then
+
+    -- close connection for deprecated clients
+    if content_length_header ~= nil or protocol_version == "HTTP/1.0" then
       response["field"]["Connection"] = "close"
     end
-    if headers["transfer-encoding"][#headers["transfer-encoding"]]:lower() == "chunked" then
-      -- 501 unrecognised encodings in queue
-      for i, v in ipairs(headers["transfer-encoding"]) do
-        if v:lower() ~= "chunked" then
-          -- 501 Not Implemented
-          response["code"] = 501
-          return response
-        end
-      end
-      -- else decode chunked
-      decode_method = "chunked"
-    else
+
+    local final_encoding = transfer_encoding_header[#transfer_encoding_header]
+
+    -- last encoding must always be chunked
+    if final_encoding ~= "chunked" then
       print("last encoding was not chunked, aborting")
       return code_400(response, true)
     end
+
+    -- return 501 on any unrecognised encodings in queue [which for now is. anything not chunked]
+    for i, v in ipairs(headers["transfer-encoding"]) do
+      if v:lower() ~= "chunked" then
+        -- 501 Not Implemented
+        -- TODO: thisis uufckked. sutrely
+        response["code"] = 501
+        return response
+      end
+    end
+
   elseif headers["content-length"] ~= nil then
-    -- list validity check (6.3)
+
+    -- perform list validity check (6.3)
     for i, v in ipairs(headers["content-length"]) do
       for k, x in ipairs(headers["content-length"]) do
         if v ~= x then
@@ -404,41 +426,51 @@ function process_incoming(client, line)
         end
       end
     end
-    -- if valid continue
+
     decode_method = "length"
     body_length = headers["content-length"][1]
+
   else body_length = 0 end
 
+
   -- persistence handling (9.3)
-  local connection_close = headers["connection"] == "close"
-  local http_11_continue = (protocol_version == "HTTP/1.1")
-  local http_10_continue = (protocol_version == "HTTP/1.0" and headers["connection"] == "keep-alive")
-  if connection_close or not (http_11_continue or http_10_continue) then response["field"]["Connection"] = "close" end
+  local client_wants_to_close = headers["connection"] == "close"
+  local protocol_should_persist = (protocol_version == "HTTP/1.1") or (protocol_version == "HTTP/1.0" and headers["connection"] == "keep-alive")
+  if client_wants_to_close or not protocol_should_persist then response["field"]["Connection"] = "close" end
 
   -- continue implementation
+  -- TODO: fix this
   if headers["expect"] == "100-continue" then respond_with_100(client, protocol_version) end
+  
 
   -- read body
   -- TODO: handle incomplete messages (8)
   local body
-  if decode_method == "length" and body_length ~= nil and body_length ~= 0 then
-    -- length decoding
+
+  if decode_method == "length" and body_length ~= nil and body_length > 0 then
+
     body, err = client:receive(body_length)
+    
     if err or body:len() ~= body_length then
       return code_400(response, true)
     end
+
   elseif decode_method == "chunked" then
-    -- chunked decoding
+
     -- read chunks
     body = ""
     body_length = 0
+
     local chunk_header, err = receive_sanitized(client)
+
     if err then
       print(err)
       return code_400(response, true)
     end
+
     local tokens = string.gmatch(chunk_header,"[^%s]+")
     local chunk_size, chunk_ext = tonumber(tokens()), tokens()
+    
     -- 7.1.1 chunk extensions. we do not recognise any chunk extensions, so we ignore them.
     while chunk_size > 0 do
       -- need to offset chunk_size to account for additional \r\n
@@ -479,6 +511,46 @@ function process_incoming(client, line)
   -- this will likely be handed back somewhere else for processing as we extend from this webserver, so for now we should just skip this.
   local processed_body = body
 
+  -- hacky place to handle websocket entry
+  if protocol_version == "HTTP/1.1"
+  and headers["upgrade"] ~= nil
+  and string.lower(headers["upgrade"]) == "websocket"
+  then 
+
+    if headers["host"] ~= luattp_backend.config.host then
+      -- TODO: we are not handling this right as we don't have the infrastructure
+    end
+
+    local decoded_sec_websocket_key = base64.decode(headers["sec-websocket-key"])
+    if decoded_sec_websocket_key:len() ~= 16 then
+      return {
+        ["code"] = 400,
+        ["field"] = {},
+        ["body"] = nil
+      }
+    end
+
+    if headers["sec-websocket-version"] ~= "13" then
+      return {
+        ["code"] = 426,
+        ["field"] = {
+          ["Sec-WebSocket-Version"] = 13
+        },
+        ["body"] = nil
+      }
+    end
+
+    -- TODO: resource names, extensions, subprotocols. we do not necessarily have to  do this for our task
+    return {
+      ["code"] = 101,
+      ["field"] = {
+        ["Upgrade"] = "websocket",
+        ["Connection"] = "Upgrade",
+        ["Sec-WebSocket-Accept"] = calculate_sec_websocket_accept(headers["sec-websocket-key"])
+      }
+    }
+
+  end
 
   -- hand to backend to generate response
   -- emulating page for test suite, for now
@@ -505,10 +577,10 @@ function process_incoming(client, line)
     if body ~= nil then response["body"] = response["body"] .. "<br>body: " .. body else response["body"] = response["body"] .. "<br>body: nil" end
   else
     if method_token == "GET" then
-      local backend_response = luattp_backend.GET(target_uri["path"], false, headers["range"])
+      local backend_response = luattp_backend.GET(target_uri["path"], headers)
       response = merge_response_message(backend_response, response)
     elseif method_token == "HEAD" then
-      local backend_response = luattp_backend.HEAD(target_uri["path"])
+      local backend_response = luattp_backend.HEAD(target_uri["path"], headers)
       response = merge_response_message(backend_response, response)
     end
   end
@@ -551,17 +623,25 @@ function send_response(client, response)
   -- construct and send response message
   construct_and_send_response(client, response)
 
-  -- follow through on persistence (9.3)
-  return response["field"]["Connection"] == "close"
+end
+
+function accept_connection(server)
+  
+  print("accepting...")
+  local new_connection = server:accept()
+  new_connection:settimeout(0.2)
+  new_connection:setoption('keepalive', true)
+  return new_connection
+
 end
 
 -- TODO: implement 9.5 graceful timeouts
 
 -- create a TCP socket and bind it to localhost:8080
-local server = assert(socket.bind("*", 8080))
+local port = 8080
+local server = assert(socket.bind("*", port))
 server:settimeout(0.2)
 -- find out which port the OS chose for us
-local ip, port = server:getsockname()
 local connections = {server}
 -- print a message informing server start
 print("server started on localhost port " .. port)
@@ -570,41 +650,41 @@ while 1 do
   
   -- wait for a socket to have something to read
   print("waiting...")
-  for k, v in pairs(connections) do
-    print(k, v)
-    print(v:dirty())
-  end
   local readable_sockets, _, err = socket.select(connections, nil)
   
   -- iterate all existing connections to check what we need to do
   local line, err
   for i, connection in ipairs(readable_sockets) do
     if connection == server then
-      -- accept the incoming connection
-      print("accepting...")
-      local new_connection = server:accept()
-      new_connection:settimeout(0.2)
-      new_connection:setoption('keepalive', true)
-      table.insert(connections, new_connection)
+
+      table.insert(connections, accept_connection(server))
+
     else
       -- read the incoming line
       line, err = receive_sanitized(connection)
       if not err then
-        print("read start line...")
+
         -- we have a start line, move on
         local response = process_incoming(connection, line)
-        local should_close = send_response(connection, response)
-        if should_close then close_connection(connections, connection) end
+
+        send_response(connection, response)
+
+        if response["field"]["Connection"] == "close" then close_connection(connections, connection) end
+
       elseif err == "closed" then
+
         print("closing...")
         -- clean shutdown connections
         close_connection(connections, connection)
+
       else
+
         -- reset connection
         print("resetting...")
         print("error: " .. err)
         send_response(connection, code_400(RESPONSE_TEMPLATE, true))
         close_connection(connections, connection)
+
       end
     end
   end

@@ -12,8 +12,13 @@ require "utils"
 -- defaults:
 -- . server accepts range requests
 local BACKEND_RESPONSE_TEMPLATE <const> = {["body"] = nil, ["code"] = nil, ["field"] = {["Accept-Ranges"] = "bytes"}}
+local BYTE_BOUNDARY <const> = "BYTE_BOUNDARY_C00TTON_BULL0CK"
 
 luattp_backend = {}
+
+luattp_backend.get_path_from_relative = function(relative_uri)
+    return luattp_backend.config.server_path .. relative_uri
+end
 
 luattp_backend.get_range_indexes = function(range_string, file_length)
     -- TODO: should include precondition check (3.1)
@@ -24,28 +29,30 @@ luattp_backend.get_range_indexes = function(range_string, file_length)
     range_string = range_string:gsub("^.*%=", "")
 
     local i = 1
-    local ranges = nil
-    local satisfiable = false
+    local ranges = {}
     for range in range_string:gmatch("([^,]+)") do
         -- parse range
-        local range_start = range:match("^([%d]+)%-")
-        local range_end = range:match("%-([%d]+)$")
+        local range = {["head"] = range:match("^([%d]+)%-"), ["tail"] = range:match("%-([%d]+)$")}
 
         -- parse to numbers
-        if range_start ~= nil then range_start = tonumber(range_start) end
-        if range_end ~= nil then range_end = tonumber(range_end) end
+        if range.head ~= nil then range.head = tonumber(range.head) end
+        if range.tail ~= nil then range.tail = tonumber(range.tail) end
 
-        -- add to table if satisfiable
-        if range_start ~= nil and range_start <= file_length or range_start == nil and range_end ~= nil and range_end > 0 then
-            -- fill values for single-value ranges and restrict to file length
-            if range_start == nil and range_end ~= nil then range_start = 0 end
-            if range_end == nil and range_start ~= nil or range_end > file_length then range_end = file_length end
-            if ranges == nil then ranges = {} end
-            ranges[i] = {}
-            ranges[i]["start"] = range_start
-            ranges[i]["end"] = range_end
-            i = i + 1
+        local satisfiable = false
+        -- check if start is satisfiable and clamp appropriate end
+        if range.head ~= nil and range.head <= file_length then
+            if range.tail == nil or range.tail > file_length then range.tail = file_length end
+            satisfiable = true
         end
+
+        -- check if end is satisfiable and clamp appropriate start
+        if range.tail ~= nil and range.tail > 0 then
+            if range.head == nil then range.head = 0 end
+            satisfiable = true
+        end
+
+
+        if satisfiable then table.insert(ranges, range) end
     end
     return ranges
 end
@@ -57,7 +64,7 @@ luattp_backend.get_mime_type = function(relative_uri)
         ["txt"] = "text/plain",
         ["css"] = "text/css",
         ["html"] = "text/html",
-        ["js"] = "text/js",
+        ["js"] = "text/javascript",
         ["apng"] = "image/apng",
         ["avif"] = "image/avif",
         ["gif"] = "image/gif",
@@ -69,7 +76,8 @@ luattp_backend.get_mime_type = function(relative_uri)
         ["wav"] = "audio/wav",
         ["ogg"] = "audio/ogg",
         ["mp3"] = "audio/mpeg",
-        ["m3u8"] = "audio/mpegURL",
+        ["m3u"] = "audio/mpegURL",
+        ["m3u8"] = "vnd.apple.mpegURL",
         ["ts"] = "video/MP2T",
     }
 
@@ -84,78 +92,115 @@ end
 luattp_backend.parse_conf = function(conf_path)
     local conf, err = io.open(conf_path, "r")
     if err then return nil, "[?] WRN in luattp_backend.parse_conf: " .. err end
-    local line = conf:read("*line")
     local config = {}
-    while line do
+    for line in conf:lines() do
+        print(line)
         local key, value = line:match("([^%:]*)%:(.*)")
         if key and value then
             config[key] = value
-        else return nil, "[?] WRN in luattp_backend.parse_conf: invalid configuration line read" end
-        line = conf:read("*line")
+        else print("[?] WRN in luattp_backend.parse_conf: invalid configuration line read, key " .. key or "nil" .. ", value " .. value or "nil") end
     end
     return config
 end
 
-luattp_backend.get_file_size = function(relative_uri)
-    local file, err = io.open(luattp_backend.config["server_path"] .. relative_uri, "r")
+luattp_backend.get_file_size = function(file)
     if file == nil or err then return nil, err end
-    return file:seek("end")
+    local current = file:seek()
+    local size = file:seek("end")
+    file:seek("set", current)
+    return size
 end
 
-luattp_backend.GET = function(relative_uri, HEAD, range)
-    -- get clean response template. do Not ask i don't know either
-    local get_response = luattp_utils.copy_table(BACKEND_RESPONSE_TEMPLATE)
+luattp_backend.build_get_response = function(file, mime_type, request_headers)
 
-    if get_response["body"] ~= nil then print("FISRT BODY:: ", get_response["body"]:sub(1, 1024)) end
-    local file = io.open(luattp_backend.config["server_path"] .. relative_uri,"r")
-    if file then
-        local file_length = luattp_backend.get_file_size(relative_uri)
-        local file_mime = luattp_backend.get_mime_type(relative_uri)
-        -- handle range requests (rfc7233)
-        -- TODO: implement if-range (3.2)
-        if range ~= nil and not HEAD then
-            local parsed_ranges = luattp_backend.get_range_indexes(range, file_length)
-            if parsed_ranges == nil then
-                -- respond with 416 Range Not Satisifable
-                get_response["code"] = 416
-                get_response["field"]["Content-Length"] = 0
-                get_response["field"]["Content-Range"] = "bytes */" .. file_length
-            else
-                -- respond with 206 Partial Content
-                get_response["code"] = 206
-                get_response["field"]["Content-Type"] = "multipart/byteranges; boundary=BYTE_BOUNDARY_C00TTON_BULL0CK"
-                -- construct multipart/byteranges
-                get_response["body"] = "BYTE_BOUNDARY_C00TTON_BULL0CK"
-                for _, range in ipairs(parsed_ranges) do
-                    -- get data for range
-                    file:seek(set, range["start"] - 1)
-                    print(range["end"] - range["start"],range["start"],range["end"])
-                    local range_payload = file:read(range["end"] - range["start"] + 1)
-                    get_response["body"] = get_response["body"] .. "\nContent-Type: " .. file_mime
-                    get_response["body"] = get_response["body"] .. "\nContent-Range: bytes " .. range["start"] .. "-" .. range["end"] .. "/" .. file_length .. ""
-                    get_response["body"] = get_response["body"] .. "\n\n"
-                    get_response["body"] = get_response["body"] .. range_payload
-                    get_response["body"] = get_response["body"] .. "\nBYTE_BOUNDARY_C00TTON_BULL0CK"
-                end
-                get_response["field"]["Content-Length"] = string.len(get_response["body"])
-            end
+    if not file then
+        return {["code"] = 404, ["field"] = {["Content-Length"] = 0}}
+    end
+
+    local file_length = luattp_backend.get_file_size(file)
+    -- handle range requests (rfc7233)
+    -- TODO: implement if-range (3.2)
+    if request_headers["range"] ~= nil then
+        local parsed_ranges = luattp_backend.get_range_indexes(request_headers["range"], file_length)
+        if parsed_ranges == {} then
+            -- respond with 416 Range Not Satisifable on no matches
+            return {
+                ["code"] = 416,
+                ["field"] = {
+                    ["Content-Length"] = 0,
+                    ["Content-Range"] = "bytes */" .. file_length
+                }
+            }
+        elseif #parsed_ranges == 1 then
+            -- respond with 206 Partial Content on one match
+            local range = parsed_ranges[1]
+            local body = file:read(range.tail - range.head)
+            file:seek(set, range.head - 1)
+            return {
+                ["code"] = 206,
+                ["field"] = {
+                    ["Content-Type"] = mime_type,
+                    ["Content-Length"] = string.len(body), 
+                    ["Content-Range"] = "bytes " .. range.head .. "-" .. range.tail .. "/" .. file_length
+                },
+                ["body"] = body
+            }
         else
-            -- respond with 200 Ok
-            get_response["code"] = 200
-            get_response["field"]["Content-Type"] = file_mime
-            if not HEAD then get_response["body"] = file:read("a") end
-            get_response["field"]["Content-Length"] = file_length
+            -- respond with 206 Partial Content multipart on two or more matches
+            local body = luattp_backend.build_range_multiline_body(file, parsed_ranges)
+            return {
+                ["code"] = 206,
+                ["field"] = {
+                    ["Content-Type"] = "multipart/byteranges; boundary=" .. BYTE_BOUNDARY,
+                    ["Content-Length"] = string.len(body)
+                },
+                ["body"] = file:read(range.tail - range.head)
+            }
         end
     else
-        -- if file not found, respond with 404 Not Found
-        get_response["code"] = 404
-        get_response["field"]["Content-Length"] = 0
+        return {
+            ["code"] = 200,
+            ["field"] = {
+                ["Content-Type"] = mime_type,
+                ["Content-Length"] = file_length
+            },
+            ["body"] = file:read("a")
+        }
     end
-    return get_response
 end
 
-luattp_backend.HEAD = function(relative_uri)
-    return luattp_backend.GET(relative_uri, true)
+luattp_backend.build_range_body = function(file, range)
+    local current = file:seek()
+    file:seek(set, range.head - 1)
+    local range_payload = file:read(range.tail - range.head)
+    file:seek("set", current)
+    return range_payload
+end
+
+luattp_backend.build_range_multiline_body = function(file, ranges)
+    local body = {}
+    for _, range in ipairs(parsed_ranges) do
+        table.insert(body, "--" .. BYTE_BOUNDARY)
+        table.insert(body, "Content-Type: " .. file_mime)
+        table.insert(body, "Content-Range: bytes " .. range.head .. "-" .. range.tail .. "/" .. file_length)
+        table.insert(body, "")
+        table.insert(body, luattp_backend.build_range_body(file, range))
+    end
+    table.insert(body, "--" .. BYTE_BOUNDARY .. "--")
+    return table.concat(body, "\n")
+end
+
+luattp_backend.GET = function(relative_uri, request_headers)
+    local path = luattp_backend.get_path_from_relative(relative_uri)
+    local file = io.open(path, "r")
+    local mime_type = luattp_backend.get_mime_type(relative_uri)
+    return luattp_backend.build_get_response(file, mime_type, request_headers)
+end
+
+luattp_backend.HEAD = function(relative_uri, request_headers)
+    local response = luattp_backend.GET(relative_uri, request_headers)
+    response["body"] = nil
+    return response
 end
 
 luattp_backend.POST = function(relative_uri)
@@ -164,7 +209,6 @@ end
 
 -- initialize
 luattp_backend.conf_path = "./luattp.conf"
-print("starting backend serving path " .. luattp_backend.conf_path)
 local err
 luattp_backend.config, err = luattp_backend.parse_conf(luattp_backend.conf_path)
 if err then print(err) end

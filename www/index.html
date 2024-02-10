@@ -4,11 +4,22 @@
         <title>testing</title>
         <link rel="stylesheet" href="src/style.css">
         <script src="js/script.js"></script>
+        <link href="//vjs.zencdn.net/7.10.2/video-js.min.css" rel="stylesheet">
+        <script src="//vjs.zencdn.net/7.10.2/video.min.js"></script>
     </head>
     <body>
         <h1>header</h1>
         <p>paragraph</p>
         <img src="img/img.jpg"></img>
-        <video src="stream/stream.m3u8" height="300" width="400"></video>
+        <!-- <video src="stream/stream.m3u8" height="300" width="400"></video> -->
+        <video-js id=vid1 width=600 height=300 class="vjs-default-skin" controls>
+            <source
+               src="stream/stream.m3u8"
+               type="application/x-mpegURL">
+          </video-js>
+        <script>
+        var player = videojs('vid1');
+        player.play();
+        </script>
     </body>
 </html>
