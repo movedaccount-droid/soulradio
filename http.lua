@@ -415,12 +415,12 @@ end
 
 function http.skip_crlf_and_receive_sanitized(client)
 
-  local line = receive_sanitized(client)
+  local line = http.receive_sanitized(client)
   local count = 0
   local err
 
   while line == "" do
-    line, err = receive_sanitized(client)
+    line, err = http.receive_sanitized(client)
     count = count + 1
     if err then
       return http.e:new(http.response:new_400(true), "[?] WRN in http.skip_crlf_and_receive_sanitized: err during skipping crlf: " .. err)
@@ -432,6 +432,13 @@ function http.skip_crlf_and_receive_sanitized(client)
 
   return http.r:new(line)
 
+end
+
+function http.receive_sanitized(client, receive_argument)
+  local BARE_CR <const> = "\r(?!\n)"
+  local line, err = client:receive(receive_argument)
+  if not err then line = string.gsub(line, BARE_CR, " ") end
+  return line, err
 end
 
 function http.parse_request_line(raw_request_line)
@@ -522,7 +529,7 @@ end
 
 function http.read_lines_until_crlf(client, max_before_error)
 
-  local line, err = receive_sanitized(client)
+  local line, err = http.receive_sanitized(client)
   if err then return http.e:new(http.response:new_400(true), "[?] WRN in http.read_field_lines_until_crlf: failed to read next field line") end
 
   local lines
@@ -530,7 +537,7 @@ function http.read_lines_until_crlf(client, max_before_error)
   while not line == "" do
 
     table.insert(lines, line)
-    line, err = receive_sanitized(client)
+    line, err = http.receive_sanitized(client)
 
     if count > max_before_error then return http.e:new(http.response:new_400(true), "[?] WRN in http.read_field_lines_until_crlf: received over max field lines of count " .. max_before_error) end
     count = count + 1
@@ -722,7 +729,7 @@ function http.read_chunked(socket)
   local content_length = 0
   local content = {}
 
-  local raw_chunk_header, err = receive_sanitized(socket)
+  local raw_chunk_header, err = http.receive_sanitized(socket)
   if err then return http.e:new(http.response:new_400(true), "[?] WRN in http.read_chunked: failed to read chunk header from socket") end
 
   -- we define chunk_exts, but currently never use them...
@@ -743,7 +750,7 @@ function http.read_chunked(socket)
     table.insert(content, chunk_data)
     content_length = content_length + chunk_size
 
-    local raw_chunk_header, err = receive_sanitized(socket)
+    local raw_chunk_header, err = http.receive_sanitized(socket)
     if err then return http.e:new(http.response:new_400(true), "[?] WRN in http.read_chunked: failed to read chunk header from socket") end
   
     parse_result = http.parse_and_validate_raw_chunk_header(raw_chunk_header)
@@ -901,10 +908,10 @@ function http.build_websocket_response(protocol_version, host_header, sec_websoc
   end
 
   if sec_websocket_version_header.value ~= "13" then
-    return http.r:new(http.response:new(
+    return http.response:new(
       426,
       http.field_lines:new({ ["Sec-WebSocket-Version"] = 13 })
-    ))
+    )
   end
 
   -- TODO: resource names, extensions, subprotocols. we do not necessarily have to  do this for our task

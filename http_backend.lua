@@ -96,12 +96,7 @@ end
 
 http_backend.build_get_response = function(file, mime_type, request_headers)
 
-    if not file then
-        return {["code"] = 404, ["field"] = {["Content-Length"] = 0}}
-    end
-
     local file_length = http_backend.get_file_size(file)
-    -- handle range requests (rfc7233)
     -- TODO: implement if-range (3.2)
     if request_headers["range"] ~= nil then
         local parsed_ranges, err = http_backend.get_range_indexes(request_headers["range"], file_length)
@@ -177,15 +172,19 @@ http_backend.build_range_multiline_body = function(file, ranges, file_mime, file
     return table.concat(body, "\n")
 end
 
-http_backend.GET = function(relative_uri, request_headers)
-    local path = http_backend.get_path_from_relative(relative_uri)
-    local file = io.open(path, "r")
+http_backend.GET = function(request)
+
+    local path = http_backend.get_path_from_relative(request.relative_uri)
+    local file, err = io.open(path, "r")
+    if not file or err then return http.response:new(404) end
+
     local mime_type = http_backend.get_mime_type(relative_uri)
-    return http_backend.build_get_response(file, mime_type, request_headers)
+    return http_backend.build_get_response(file, mime_type, request)
+
 end
 
-http_backend.HEAD = function(relative_uri, request_headers)
-    local response = http_backend.GET(relative_uri, request_headers)
-    response["body"] = nil
+http_backend.HEAD = function(request)
+    local response = http_backend.GET(request)
+    response.body = nil
     return response
 end
