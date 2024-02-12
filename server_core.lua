@@ -21,7 +21,7 @@ function server.accept_connection(server)
   print("[.] accepting new client connection")
   local connection = server:accept()
   -- TODO: move config parsing
-  connection:settimeout(http_backend.config.timeout)
+  connection:settimeout(server.config.timeout)
   connection:setoption('keepalive', true)
   table.insert(server.connections, connection)
   -- TODO: configurable default
@@ -35,7 +35,7 @@ function server.open_server(host, port)
 
   print("[.] opening server on port " .. port)
   local server, err = socket.bind(host, port)
-  server:settimeout(http_backend.config.timeout)
+  server:settimeout(server.config.timeout)
 
   return server, err
 
@@ -107,12 +107,60 @@ function server.oneshot(socket, response)
 
 end
 
+function server.read_conf(conf_path)
+  
+  local read_as_number_lookup = {
+    ["timeout"] = true,
+    ["garbage_collection_cycle"] = true
+  }
+
+  local conf, err = io.open(conf_path, "r")
+  if not conf or err then return nil, "[?] WRN in server.parse_conf: could not read config file with err " .. err end
+  
+  local config = {}
+  for line in conf:lines() do
+
+      local CAPTURE_EITHER_SIDE_OF_COLON <const> = "([^%:]*)%:(.*)"
+      local recipient_and_key, value = string.match(line, CAPTURE_EITHER_SIDE_OF_COLON)
+      
+      local SPLIT_ON_DOT <const> = "^(.-)%.(.*)$"
+      local recipient, key = string.match(recipient_and_key, SPLIT_ON_DOT)
+
+      if recipient and key and value then
+
+        if read_as_number_lookup[key] then value = tonumber(value) end
+        if not config[recipient] then config[recipient] = {} end
+        config[recipient][key] = value
+
+      else print("[?] WRN in server.parse_conf: invalid configuration line read, key " .. key or "nil" .. ", value " .. value or "nil") end
+  
+    end
+
+  return config
+
+end
+
+-- distributes configs to tables, i.e. a conf entry "http.host = x.x.x.x"
+-- will go to http.config.host after loading
+function server.distribute_conf(conf)
+
+  for k, v in conf do
+    _G[k].config = v
+  end
+
+end
+
+-- initialize config
+local config, err = server.read_conf("./lua-server-lplp.conf")
+assert(!err, err)
+server.distribute_conf(config)
+
 -- setup main server loop
 local server, err = server.open_server("0.0.0.0", 8080)
 assert(server, "[!] ERR in server main loop: could not open server: " .. err)
 server.connections = { server }
 server.connection_protocol_lookup = { [server] = "server" }
-local garbage_collection_countdown = http_backend.config.garbage_collection_cycle
+local garbage_collection_countdown = server.config.garbage_collection_cycle
 
 while 1 do
 
@@ -143,7 +191,7 @@ while 1 do
 
   if garbage_collection_countdown == 0 then
     server.clean_connections()
-    garbage_collection_countdown = http_backend.config.garbage_collection_cycle
+    garbage_collection_countdown = server.config.garbage_collection_cycle
   end
 
 end

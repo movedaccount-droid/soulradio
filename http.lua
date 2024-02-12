@@ -664,7 +664,7 @@ function http.determine_body_info(transfer_encoding, content_length)
   if transfer_encoding.value ~= nil then
 
     if not http.check_all_encodings_recognized(transfer_encoding)
-    then return http.e:new(http.response:new(501), "[?] WRN in http.determine_body_info: found unrecognised encoding of type " .. v)
+    then return http.e:new(http.response:new(501), "[?] WRN in http.determine_body_info: found unrecognised encoding")
     else return http.r:new(table.pack("Chunked", nil)) end
     
   elseif content_length.value ~= nil then
@@ -752,7 +752,7 @@ function http.read_chunked(socket)
 
   end
 
-  local trailer_fields = http.read_and_parse_field_lines_until_crlf(client)
+  local trailer_fields = http.read_and_parse_field_lines_until_crlf(socket)
   if trailer_fields.err then return trailer_fields
   else trailer_fields = trailer_fields.unwrap() end
 
@@ -890,7 +890,7 @@ function http.build_websocket_response(protocol_version, host_header, sec_websoc
   or host_header == nil
   or sec_websocket_version_header == nil
   or sec_websocket_key_header == nil
-  or host_header.value ~= http_backend.config.host
+  or host_header.value ~= http.config.host
   then
     return http.response:new_400()
   end
@@ -913,7 +913,7 @@ function http.build_websocket_response(protocol_version, host_header, sec_websoc
     http.field_lines:new({
       ["Upgrade"] = "websocket",
       ["Connection"] = "Upgrade",
-      ["Sec-WebSocket-Accept"] = calculate_sec_websocket_accept(sec_websocket_key_header.value)
+      ["Sec-WebSocket-Accept"] = http.calculate_sec_websocket_accept(sec_websocket_key_header.value)
     }),
     nil, false, true
   ))

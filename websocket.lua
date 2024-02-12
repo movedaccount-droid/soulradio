@@ -40,12 +40,12 @@ end
 websocket.incoming = function(socket)
 
     local incoming, err = websocket.read_message(socket)
+    if not incoming or err then return websocket.fail_connection(err) end
 
     if not (incoming.fin == 1 and incoming.opcode ~= 0) then incoming = websocket.handle_fragment(incoming, socket) end
 
     local outgoing, err = websocket.generate_response(incoming)
-    
-    if err then outgoing = websocket.fail_connection(err) end
+    if err then return websocket.fail_connection(err) end
 
     return outgoing
 
@@ -55,7 +55,7 @@ end
 websocket.read_message = function(socket)
 
     local raw_message, err = websocket.read_message_from_socket(socket)
-    if err then return nil, err end
+    if not raw_message or err then return nil, err end
 
     local valid, err = websocket.validate_message(raw_message)
     if not valid then return nil, err end

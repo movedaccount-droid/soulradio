@@ -8,7 +8,7 @@ local BYTE_BOUNDARY <const> = "BYTE_BOUNDARY_C00TTON_BULL0CK"
 http_backend = {}
 
 http_backend.get_path_from_relative = function(relative_uri)
-    return http_backend.config.server_path .. relative_uri
+    return http.config.server_path .. relative_uri
 end
 
 http_backend.get_range_indexes = function(range_string, file_length)
@@ -87,29 +87,7 @@ http_backend.get_mime_type = function(relative_uri)
     return mime_type
 end
 
-http_backend.parse_conf = function(conf_path)
-
-    local number_confs = {
-        ["timeout"] = true,
-        ["garbage_collection_cycle"] = true
-    }
-
-    local conf, err = io.open(conf_path, "r")
-    if err then return nil, "[?] WRN in http_backend.parse_conf: " .. err end
-    local config = {}
-    for line in conf:lines() do
-        print(line)
-        local key, value = line:match("([^%:]*)%:(.*)")
-        if key and value then
-            if number_confs[key] then value = tonumber(value) end
-            config[key] = value
-        else print("[?] WRN in http_backend.parse_conf: invalid configuration line read, key " .. key or "nil" .. ", value " .. value or "nil") end
-    end
-    return config
-end
-
 http_backend.get_file_size = function(file)
-    if file == nil or err then return nil, err end
     local current = file:seek()
     local size = file:seek("end")
     file:seek("set", current)
@@ -127,6 +105,7 @@ http_backend.build_get_response = function(file, mime_type, request_headers)
     -- TODO: implement if-range (3.2)
     if request_headers["range"] ~= nil then
         local parsed_ranges, err = http_backend.get_range_indexes(request_headers["range"], file_length)
+        -- TODO; are uo fucking skitting me
         if err then
 
 
@@ -143,7 +122,7 @@ http_backend.build_get_response = function(file, mime_type, request_headers)
             -- respond with 206 Partial Content on one match
             local range = parsed_ranges[1]
             local body = file:read(range.tail - range.head)
-            file:seek(set, range.head - 1)
+            file:seek("set", range.head - 1)
             return {
                 ["code"] = 206,
                 ["field"] = {
@@ -155,7 +134,7 @@ http_backend.build_get_response = function(file, mime_type, request_headers)
             }
         else
             -- respond with 206 Partial Content multipart on two or more matches
-            local body = http_backend.build_range_multiline_body(file, parsed_ranges)
+            local body = http_backend.build_range_multiline_body(file, parsed_ranges, mime_type, string.len(body))
             return {
                 ["code"] = 206,
                 ["field"] = {
@@ -179,15 +158,15 @@ end
 
 http_backend.build_range_body = function(file, range)
     local current = file:seek()
-    file:seek(set, range.head - 1)
+    file:seek("set", range.head - 1)
     local range_payload = file:read(range.tail - range.head)
     file:seek("set", current)
     return range_payload
 end
 
-http_backend.build_range_multiline_body = function(file, ranges)
+http_backend.build_range_multiline_body = function(file, ranges, file_mime, file_length)
     local body = {}
-    for _, range in ipairs(parsed_ranges) do
+    for _, range in ipairs(ranges) do
         table.insert(body, "--" .. BYTE_BOUNDARY)
         table.insert(body, "Content-Type: " .. file_mime)
         table.insert(body, "Content-Range: bytes " .. range.head .. "-" .. range.tail .. "/" .. file_length)
@@ -209,18 +188,4 @@ http_backend.HEAD = function(relative_uri, request_headers)
     local response = http_backend.GET(relative_uri, request_headers)
     response["body"] = nil
     return response
-end
-
-http_backend.POST = function(relative_uri)
-
-end
-
--- initialize
-http_backend.conf_path = "./luattp.conf"
-local err
-http_backend.config, err = http_backend.parse_conf(http_backend.conf_path)
-if err then print(err) end
-print("------- config ------- ")
-for k, v in pairs(http_backend.config) do
-    print(k .. ": " .. v)
 end
