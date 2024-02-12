@@ -246,3 +246,10 @@ uridecoder.match_http_uri_host = function(http_uri_host)
     http_uri_host = http_uri_host:gsub("%:" .. PORT .. "$", "")
     return uridecoder.match_host(http_uri_host)
 end
+
+uridecoder.match_http_request_target = function(http_request_target)
+    return uridecoder.match_http_origin_form(http_request_target)
+        or uridecoder.match_http_absolute_form(http_request_target)
+        or uridecoder.match_http_authority_form(http_request_target)
+        or uridecoder.match_http_asterisk_form(http_request_target)
+end
