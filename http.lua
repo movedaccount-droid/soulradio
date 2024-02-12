@@ -367,10 +367,12 @@ function http.read_request(client)
   -- headers are validated later when used
   local parsed_headers = http.read_and_parse_field_lines_until_crlf(client)
   if parsed_headers.err then return parsed_headers
-  else parsed_headers = parsed_headers.unwrap() end
+  else parsed_headers = parsed_headers:unwrap() end
 
   -- parse request target now we have access to host
   request_target = http.parse_request_target(method_token, request_target, nil, parsed_headers:get("Host"))
+  if request_target.err then return request_target
+  else request_target = request_target:unwrap() end
 
   local transfer_encoding_header = parsed_headers:get("Transfer-Encoding")
   local content_length_header = parsed_headers:get("Content-Length")
@@ -976,6 +978,10 @@ function http.append_universal_headers(response)
 
   -- suggests server is keeping connection alive
   response:append(http.field_line:new("Connection", ""))
+
+  if http_backend.consts.implemented.range_requests then
+    response:append(http.field_line:new("Accept-Ranges", "bytes"))
+  end
 
 end
 

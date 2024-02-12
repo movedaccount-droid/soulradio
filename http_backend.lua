@@ -1,12 +1,15 @@
 -- http_backend: http backend handler for lua-server-lplp
 
--- defaults:
--- . server accepts range requests
-local BACKEND_RESPONSE_TEMPLATE <const> = {["body"] = nil, ["code"] = nil, ["field"] = {["Accept-Ranges"] = "bytes"}}
-local BYTE_BOUNDARY <const> = "BYTE_BOUNDARY_C00TTON_BULL0CK"
-
 http_backend = {}
 
+-- http_backend.consts: universal constants
+http_backend.consts.implemented = {
+    ["range_requests"] = true
+}
+
+http_backend.consts.BYTE_BOUNDARY = "BYTE_BOUNDARY_C00TTON_BULL0CK"
+
+-- main code
 http_backend.get_path_from_relative = function(relative_uri)
     return http.config.server_path .. relative_uri
 end
@@ -94,60 +97,48 @@ http_backend.get_file_size = function(file)
     return size
 end
 
-http_backend.build_get_response = function(file, mime_type, request_headers)
+http_backend.build_get_response = function(file, mime_type, request)
 
     local file_length = http_backend.get_file_size(file)
     -- TODO: implement if-range (3.2)
-    if request_headers["range"] ~= nil then
-        local parsed_ranges, err = http_backend.get_range_indexes(request_headers["range"], file_length)
-        -- TODO; are uo fucking skitting me
-        if err then
+    if request:get("Range") ~= nil then
 
+        local parsed_ranges, err = http_backend.get_range_indexes(request:get("Range"), file_length)
+        if not parsed_ranges or err then return http.response:new_400()
 
         elseif parsed_ranges == {} then
-            -- respond with 416 Range Not Satisifable on no matches
-            return {
-                ["code"] = 416,
-                ["field"] = {
-                    ["Content-Length"] = 0,
-                    ["Content-Range"] = "bytes */" .. file_length
-                }
-            }
+
+            -- 416 Range Not Satisifable
+            return http.response:new(416, http.field_lines:new({
+                ["Content-Range"] = "bytes */" .. file_length,
+            }))
+
         elseif #parsed_ranges == 1 then
-            -- respond with 206 Partial Content on one match
+
+            -- 206 Partial Content
             local range = parsed_ranges[1]
-            local body = file:read(range.tail - range.head)
             file:seek("set", range.head - 1)
-            return {
-                ["code"] = 206,
-                ["field"] = {
-                    ["Content-Type"] = mime_type,
-                    ["Content-Length"] = string.len(body), 
-                    ["Content-Range"] = "bytes " .. range.head .. "-" .. range.tail .. "/" .. file_length
-                },
-                ["body"] = body
-            }
+            local body = http_backend.build_range_body(file, range)
+
+            return http.response:new(206, http.field_lines:new({
+                ["Content-Type"] = mime_type,
+                ["Content-Range"] = "bytes " .. range.head .. "-" .. range.tail .. "/" .. file_length
+            }), body)
+
         else
-            -- respond with 206 Partial Content multipart on two or more matches
-            local body = http_backend.build_range_multiline_body(file, parsed_ranges, mime_type, string.len(body))
-            return {
-                ["code"] = 206,
-                ["field"] = {
-                    ["Content-Type"] = "multipart/byteranges; boundary=" .. BYTE_BOUNDARY,
-                    ["Content-Length"] = string.len(body)
-                },
-                ["body"] = body
-            }
+
+            -- 206 Partial Content [multipart]
+            local body = http_backend.build_range_multiline_body(file, parsed_ranges, mime_type, file_length)
+
+            return http.response:new(206, http.field_lines:new({
+                ["Content-Type"] = "multipart/byteranges; boundary=" .. http_backend.consts.BYTE_BOUNDARY
+            }), body)
+
         end
     else
-        return {
-            ["code"] = 200,
-            ["field"] = {
-                ["Content-Type"] = mime_type,
-                ["Content-Length"] = file_length
-            },
-            ["body"] = file:read("a")
-        }
+        return http.response:new(200, http.field_lines:new({
+            ["Content-Type"] = mime_type
+        }), file:read("a"))
     end
 end
 
@@ -162,23 +153,23 @@ end
 http_backend.build_range_multiline_body = function(file, ranges, file_mime, file_length)
     local body = {}
     for _, range in ipairs(ranges) do
-        table.insert(body, "--" .. BYTE_BOUNDARY)
+        table.insert(body, "--" .. http_backend.consts.BYTE_BOUNDARY)
         table.insert(body, "Content-Type: " .. file_mime)
         table.insert(body, "Content-Range: bytes " .. range.head .. "-" .. range.tail .. "/" .. file_length)
         table.insert(body, "")
         table.insert(body, http_backend.build_range_body(file, range))
     end
-    table.insert(body, "--" .. BYTE_BOUNDARY .. "--")
+    table.insert(body, "--" .. http_backend.consts.BYTE_BOUNDARY .. "--")
     return table.concat(body, "\n")
 end
 
 http_backend.GET = function(request)
 
-    local path = http_backend.get_path_from_relative(request.relative_uri)
+    local path = http_backend.get_path_from_relative(request.request_target.path)
     local file, err = io.open(path, "r")
     if not file or err then return http.response:new(404) end
 
-    local mime_type = http_backend.get_mime_type(relative_uri)
+    local mime_type = http_backend.get_mime_type(path)
     return http_backend.build_get_response(file, mime_type, request)
 
 end
