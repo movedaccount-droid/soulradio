@@ -1,13 +1,4 @@
--- take request input handled + parsed by frontend
--- get element requested by GET request
--- implement specific type, at least html, css, js, png, flac
--- return with 200 else 404
-
--- must implement accept-ranges
--- useful links:
--- https://developer.mozilla.org/en-US/docs/Web/HTTP/Configuring_servers_for_Ogg_media
-
-require "utils"
+-- http_backend: http backend handler for lua-server-lplp
 
 -- defaults:
 -- . server accepts range requests
@@ -22,23 +13,28 @@ end
 
 http_backend.get_range_indexes = function(range_string, file_length)
     -- TODO: should include precondition check (3.1)
-    -- provided a file and a Range header field,
-    -- returns the list of valid (satisfiable) byte ranges
 
-    -- remove bytes= if exists
-    range_string = range_string:gsub("^.*%=", "")
+    local BYTES_EQUALS_HEADER <const> = "^.*%="
+    range_string = string.gsub(range_string, BYTES_EQUALS_HEADER, "")
 
-    local i = 1
     local ranges = {}
-    for range in range_string:gmatch("([^,]+)") do
-        -- parse range
-        local range = {["head"] = range:match("^([%d]+)%-"), ["tail"] = range:match("%-([%d]+)$")}
+    local ITEMS_BETWEEN_COMMAS <const> = "([^,]+)"
+    for range in string.gmatch(range_string, ITEMS_BETWEEN_COMMAS) do
 
-        -- parse to numbers
-        if range.head ~= nil then range.head = tonumber(range.head) end
-        if range.tail ~= nil then range.tail = tonumber(range.tail) end
+        local RANGE_HEAD = "^([%d]+)%-"
+        local RANGE_TAIL = "%-([%d]+)$"
+        local range = {
+            ["head"] = string.match(range, RANGE_HEAD),
+            ["tail"] = string.match(range, RANGE_TAIL)
+        }
+
+        local err
+        range.head = tonumber(range.head)
+        range.tail = tonumber(range.tail)
+        if not range.head or not range.tail then return nil, "[?] WRN in http_backend.get_range_indexes: could not convert head/tail to numbers" end
 
         local satisfiable = false
+
         -- check if start is satisfiable and clamp appropriate end
         if range.head ~= nil and range.head <= file_length then
             if range.tail == nil or range.tail > file_length then range.tail = file_length end
@@ -51,10 +47,12 @@ http_backend.get_range_indexes = function(range_string, file_length)
             satisfiable = true
         end
 
-
         if satisfiable then table.insert(ranges, range) end
+
     end
+
     return ranges
+
 end
 
 http_backend.get_mime_type = function(relative_uri)
@@ -128,8 +126,11 @@ http_backend.build_get_response = function(file, mime_type, request_headers)
     -- handle range requests (rfc7233)
     -- TODO: implement if-range (3.2)
     if request_headers["range"] ~= nil then
-        local parsed_ranges = http_backend.get_range_indexes(request_headers["range"], file_length)
-        if parsed_ranges == {} then
+        local parsed_ranges, err = http_backend.get_range_indexes(request_headers["range"], file_length)
+        if err then
+
+
+        elseif parsed_ranges == {} then
             -- respond with 416 Range Not Satisifable on no matches
             return {
                 ["code"] = 416,
@@ -161,7 +162,7 @@ http_backend.build_get_response = function(file, mime_type, request_headers)
                     ["Content-Type"] = "multipart/byteranges; boundary=" .. BYTE_BOUNDARY,
                     ["Content-Length"] = string.len(body)
                 },
-                ["body"] = file:read(range.tail - range.head)
+                ["body"] = body
             }
         end
     else

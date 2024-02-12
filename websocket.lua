@@ -1,5 +1,4 @@
--- websocket backend for the luattp server
-require "utils"
+-- websocket: websocket message handler for lua-server-lplp
 require "websocket_backend"
 
 websocket = {}
