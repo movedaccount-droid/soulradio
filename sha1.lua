@@ -38,11 +38,13 @@ sha1.calculate = function(message)
 
     local message = table.concat(pre_processing)
 
-    local chunk_count = string.len(message) * 8 / 512
+    local CHARS_PER_CHUNK <const> = 512 / 8
+    local final_chunk_index = string.len(message) - CHARS_PER_CHUNK + 1
 
-    for i=1,chunk_count do
+    for i=1,final_chunk_index,CHARS_PER_CHUNK do
         
-        local chunk = string.sub(message, i, i + 511)
+        local chunk = string.sub(message, i, i + CHARS_PER_CHUNK - 1)
+        print(chunk)
 
         local a = h0
         local b = h1
@@ -145,20 +147,16 @@ tests["wikipedia_example_2"] = function()
     return true
 end
 
--- a full double quote still returns the same value....
 tests["wikipedia_example_2_long"] = function()
-    local sha = sha1.calculate("The quick brown fox jumps over the lazy cogThe quick brown fox jumps over the lazy cog")
-    print(sha)
     local sha = sha1.calculate("The quick brown fox jumps over the lazy cogThe quick brown fox ju")
-    print(sha)
     return sha == "726d10a72f4e7dbb59578e930fa4ff7630cb9163"
 end
 
--- tests["python_sha1_comparison"] = function()
---     local sha = sha1.calculate("dGhlIHNhbXBsZSBub25jZQ==258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
---     print(sha)
---     return sha == "b37a4f2cc0624f1690f64606cf385945b2bec4ea"
--- end
+tests["python_sha1_comparison"] = function()
+    local sha = sha1.calculate("dGhlIHNhbXBsZSBub25jZQ==258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
+    print(sha)
+    return sha == "b37a4f2cc0624f1690f64606cf385945b2bec4ea"
+end
 
 local successes, failures = 0, 0
 
