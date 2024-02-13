@@ -350,18 +350,18 @@ tests["parse_fin_rsv_from_raw_1001"] = function()
     return true
 end
 
-local successes, failures = 0, 0
+-- local successes, failures = 0, 0
 
-for n, test in pairs(tests) do
-    io.write(n .. "... ")
-    if not test() then
-        io.write("FAILED.\n")
-        failures = failures + 1
-    else
-        io.write("passed.\n")
-        successes = successes + 1
-    end
-end
+-- for n, test in pairs(tests) do
+--     io.write(n .. "... ")
+--     if not test() then
+--         io.write("FAILED.\n")
+--         failures = failures + 1
+--     else
+--         io.write("passed.\n")
+--         successes = successes + 1
+--     end
+-- end
 
-print("")
-print(successes .. " passed. " .. failures .. " failed.")
+-- print("")
+-- print(successes .. " passed. " .. failures .. " failed.")

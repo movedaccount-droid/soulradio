@@ -13,13 +13,13 @@ require "websocket"
 local socket = require("socket")
 local ltn12 = require("ltn12")
 
-local server = {}
+server = {}
 server.connections = {}
 
-function server.accept_connection(server)
+function server.accept_connection(open_server)
 
   print("[.] accepting new client connection")
-  local connection = server:accept()
+  local connection = open_server:accept()
   -- TODO: move config parsing
   connection:settimeout(server.config.timeout)
   connection:setoption('keepalive', true)
@@ -34,10 +34,11 @@ end
 function server.open_server(host, port)
 
   print("[.] opening server on port " .. port)
-  local server, err = socket.bind(host, port)
-  server:settimeout(server.config.timeout)
+  local opened_server, err = socket.bind(host, port)
 
-  return server, err
+  opened_server:settimeout(server.config.timeout)
+
+  return opened_server, err
 
 end
 
@@ -48,7 +49,7 @@ function server.close_connection(connection)
 
     if open_connection == connection then
       connection:shutdown()
-      server.connections[i] = nil 
+      server.connections[i] = nil
     end
 
   end
@@ -62,10 +63,12 @@ function server.clean_connections()
 
   for i, connection in ipairs(server.connections) do
 
-    local _, err = connection:receive(0)
-    if err then 
-      print("[.] cleaning connection due to unseen closure")
-      server.close_connection(connection)
+    if not server.connection_protocol_lookup[connect] == "server" then
+      local _, err = connection:receive(0)
+      if err then 
+        print("[.] cleaning connection due to unnoticed closure")
+        server.close_connection(connection)
+      end
     end
 
   end
@@ -73,22 +76,22 @@ function server.clean_connections()
 end
 
 -- handles the main response from a backend
-function server.handle_response(socket, response)
+function server.handle_response(client, response)
 
   if response.upgrade then
-    server.connection_protocol_lookup[socket] = response.upgrade
+    server.connection_protocol_lookup[client] = response.upgrade
   end
 
-  server.oneshot(socket, response)
+  server.oneshot(client, response)
 
   if response.close then
-    server.close_connection(socket)
+    server.close_connection(client)
   end
 
 end
 
 -- handles any additional mid-process oneshot responses a backend wishes to send
-function server.oneshot(socket, response)
+function server.oneshot(client, response)
 
   local source = ltn12.source.string(response.response)
   local sink, err
@@ -100,7 +103,7 @@ function server.oneshot(socket, response)
       if err then print("[.] could not flood response to client...") end
     end
   else
-    sink = socket.sink("keep-open", socket)
+    sink = socket.sink("keep-open", client)
     _, err = ltn12.pump.all(source, sink)
     if err then print("[?] WRN in server.handle_response: could not send response to client") end
   end
@@ -144,22 +147,22 @@ end
 -- will go to http.config.host after loading
 function server.distribute_conf(conf)
 
-  for k, v in conf do
-    _G[k].config = v
+  for k, v in pairs(conf) do
+    _ENV[k].config = v
   end
 
 end
 
 -- initialize config
 local config, err = server.read_conf("./lua-server-lplp.conf")
-assert(!err, err)
+assert(not err, err)
 server.distribute_conf(config)
 
 -- setup main server loop
-local server, err = server.open_server("0.0.0.0", 8080)
-assert(server, "[!] ERR in server main loop: could not open server: " .. err)
-server.connections = { server }
-server.connection_protocol_lookup = { [server] = "server" }
+local opened_server, err = server.open_server("0.0.0.0", 8080)
+assert(server, "[!] ERR in server main loop: could not open server: " .. tostring(err))
+server.connections = { opened_server }
+server.connection_protocol_lookup = { [opened_server] = "server" }
 local garbage_collection_countdown = server.config.garbage_collection_cycle
 
 while 1 do
@@ -167,6 +170,7 @@ while 1 do
   ::continue::
   print("waiting to read...")
 
+  -- TODO: this needs to timeout eventually
   local readable_sockets, _, err = socket.select(server.connections)
 
   if err then
@@ -175,16 +179,16 @@ while 1 do
   end
   
   for _, connection in ipairs(readable_sockets) do
-    local protocol = server.connection_protocol_lookup[server]
+    local protocol = server.connection_protocol_lookup[connection]
     local response
+    -- TODO: this should just be a callk to env.
+    -- websocket can reutrn nil so handle_repsonse also should do thathanlde it whatever
     if protocol == "server" then
-      server.accept_connection(server)
-    elseif protocol == "http" then
-      response = http.incoming(connection)
-    elseif protocol == "websocket" then
-      response = websocket.incoming(connection)
+      server.accept_connection(connection)
+    else
+      response = _ENV[protocol].incoming(connection)
+      server.handle_response(connection, response)
     end
-    server.handle_response(connection, response)
   end
 
   garbage_collection_countdown = garbage_collection_countdown - 1

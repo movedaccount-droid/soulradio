@@ -3,6 +3,8 @@
 http_backend = {}
 
 -- http_backend.consts: universal constants
+http_backend.consts = {}
+
 http_backend.consts.implemented = {
     ["range_requests"] = true
 }

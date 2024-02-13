@@ -6,7 +6,12 @@ require "sha1"
 
 http = {}
 
-
+function dp(t)
+  print("printing table: ", t)
+  for k, v in pairs(t) do
+    print(k, v)
+  end
+end
 
 -- http.abnf: various rfc abnf matchers
 http.abnf = {
@@ -14,7 +19,7 @@ http.abnf = {
   ["HTTP_VERSION"] = "HTTP/%d%.%d",
   ["HEXDIG"] = "%x",
   ["OBS_TEXT"] = "[€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ ¡¢£¤¥¦§¨©ª«¬­®¯°±²³´µ¶·¸¹º»¼½¾¿ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖ×ØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõö÷øùúûüýþÿ]",
-  ["OWS"] = "[ 	]",
+  ["RWS"] = "[ 	]",
   ["TCHAR"] = "[%!%#%$%%%&%'%*%+%-%.%6%_%`%|%~%d%a]",
   ["VCHAR"] = "[%!%\"%#%$%%%&%'%(%)%*%+%,%-%.%/%w%:%;%<%=%>%?%@%[%\\%]%^%_%`%{%|%}%~]",
 }
@@ -23,8 +28,8 @@ function http.abnf.combine(sets)
 
   local full_set = {"[", "]"}
   
-  for set in sets do
-    table.insert(full_set, 2, string.sub(set, 1, -1))
+  for _, set in ipairs(sets) do
+    table.insert(full_set, 2, string.sub(set, 2, -2))
   end
   
   return table.concat(full_set)
@@ -44,7 +49,7 @@ function http.abnf.build_ascii(lower_bound, upper_bound)
 
   for i=lower_bound,upper_bound do
     local char = string.char(i)
-    if string.find(char, MAGIC_CHARACTERS) then table.insert(set, -2, "%") end
+    if string.find(char, MAGIC_CHARACTERS) then table.insert(set, #set - 1, "%") end
     table.insert(set, 2, string.char(i))
   end
 
@@ -52,29 +57,31 @@ function http.abnf.build_ascii(lower_bound, upper_bound)
 
 end
 
-http.abnf.BWS = http.abnf.OWS
+http.abnf.BWS = http.abnf.RWS .. "?"
 http.abnf.CHUNK_EXT_NAME = http.abnf.TCHAR .. "+"
 http.abnf.FIELD_NAME = http.abnf.CHUNK_EXT_NAME
-http.abnf.FIELD_VCHAR = http.abnf.combine(table.pack(http.abnf.VCHAR, http.abnf.OBS_TEXT))
-http.abnf.FIELD_CONTENT = http.abnf.FIELD_VCHAR .. "[]"
+http.abnf.FIELD_VCHAR = http.abnf.combine({ http.abnf.VCHAR, http.abnf.OBS_TEXT })
+http.abnf.OWS = http.abnf.BWS
+http.abnf.QDTEXT = http.abnf.combine({ "[" .. http.abnf.HTAB .. "]", "[ ]", http.abnf.build_ascii(33, 39), http.abnf.build_ascii(42, 91), http.abnf.build_ascii(93, 126), http.abnf.OBS_TEXT })
+http.abnf.QUOTED_PAIR = "\\" .. http.abnf.combine({ "[" .. http.abnf.HTAB .. "]", "[ ]", http.abnf.VCHAR, http.abnf.OBS_TEXT })
 http.abnf.TOKEN = http.abnf.CHUNK_EXT_NAME
-http.abnf.QDTEXT = http.abnf.combine({ http.abnf.HTAB, "[ ]", http.abnf.build_ascii(33, 39), http.abnf.build_ascii(42, 91), http.abnf.build_ascii(93, 126), http.abnf.OBS_TEXT })
-http.abnf.QUOTED_PAIR = "\\" .. http.abnf.combine({ http.abnf.HTAB, "[ ]", http.abnf.VCHAR, http.abnf.OBS_TEXT })
 
 -- each matcher returns:
 -- if the string was a complete match for the matcher (i.e. result was "")
 -- the string with any match stripped
 -- the match
+http.abnf.matcher = {}
+
 function http.abnf.matcher.FIELD_CONTENT(fc)
-  local OPTIONAL_EXTENSION <const> = "[" .. http.abnf.combine(table.pack("[ 	]", http.abnf.FIELD_VCHAR .. "]+" .. http.abnf.FIELD_VCHAR))
-  local mfc = string.gsub(fc, "^" .. http.abnf.FIELD_VCHAR, "", 1)
-  local mfc = string.gsub(mfc, "^" .. OPTIONAL_EXTENSION, "", 1)
-  return mfc == "", mfc
+  local ENDS_WITH_VCHAR <const> = http.abnf.combine({ "[ ]", "[" .. http.abnf.HTAB .. "]", http.abnf.FIELD_VCHAR }) .. "+" .. http.abnf.FIELD_VCHAR .. "$"
+  local mfc, count = string.gsub(fc, "^" .. http.abnf.FIELD_VCHAR, "", 1)
+  local mfc = string.gsub(mfc, "^" .. ENDS_WITH_VCHAR, "", 1)
+  return count > 0, mfc
 end
 
 function http.abnf.matcher.FIELD_VALUE(fv)
-  local buf = fv
   repeat 
+  local buf = fv
   _, fv = http.abnf.matcher.FIELD_CONTENT(fv)
   until buf == fv
   return fv == "", fv
@@ -108,6 +115,8 @@ end
 
 
 -- http.consts: generic constants
+http.consts = {}
+
 http.consts.status_text_lookup = {
   [100] = "Continue",
   [101] = "Switching Protocols",
@@ -164,13 +173,16 @@ function http.field_lines:new(headers)
     ["headers_case_lookup"] = {}
   }
 
-  for k, _ in pairs(headers) do
-    fls:add_case_lookup(k)
-  end
-
   self.__index = self
   self.__add = self.add
   setmetatable(fls, self)
+
+  if headers ~= nil then
+    for k, _ in pairs(headers) do
+      fls:add_case_lookup(k)
+    end
+  end
+
   return fls
 end
 
@@ -184,7 +196,7 @@ end
 
 -- gets the header_name as field_line safely and case-insensitively
 function http.field_lines:get(header_name)
-  local cased = self.get_case_lookup(header_name)
+  local cased = self:get_case_lookup(header_name)
   local value = self.headers[cased]
   if not cased or not value then return nil
   else return http.field_line:new(cased, value) end
@@ -217,22 +229,35 @@ end
 http.response = http.field_lines:new()
 
 function http.response:new(code, headers, body, close, upgrade)
+
+  if not headers then headers = http.field_lines:new() end
+
   headers.code = code
   headers.body = body
   headers.close = close or false
   headers.upgrade = upgrade
+
+  self.__index = self
+  setmetatable(headers, self)
+
   return headers
+
 end
 
 function http.response:new_400(close)
   local headers
   if close then headers = http.field_lines:new({ ["Connection"] = "close" }) end
-  return self:new(400, headers, nil, true)
+  return self:new(400, headers, nil, close)
 end
 
 function http.response:serialize()
 
-  self:set_body_encoding()
+  print("body length", self.body:len())
+
+  -- set encoding early so we have headers ready for later
+  if self.body then
+    self:set_body_encoding()
+  end
 
   local serialized_pieces = {}
 
@@ -266,7 +291,7 @@ function http.response:serialize_field_lines()
 
   local serialized_field_lines = {}
 
-  for k, v in self.headers do
+  for k, v in pairs(self.headers) do
     table.insert(serialized_field_lines, k .. ": " .. v)
   end
 
@@ -276,7 +301,9 @@ end
 
 function http.response:serialize_body()
 
-  if self:get("Transfer-Encoding") == "chunked" then
+  local transfer_encoding_header = self:get("Transfer-Encoding")
+
+  if transfer_encoding_header and transfer_encoding_header.value == "chunked" then
     return self:serialize_body_chunked()
   else
     return self.body
@@ -290,7 +317,7 @@ function http.response:serialize_body_chunked()
   local CHUNK_SIZE <const> = 1024
   local index = 1
 
-  while index < self.body.length do
+  while index < self.body:len() do
     
     local chunk = string.sub(self.body, index, index + CHUNK_SIZE - 1)
     local chunk_size = string.format("%x", chunk:len())
@@ -306,7 +333,7 @@ function http.response:serialize_body_chunked()
   table.insert(chunks, "0")
   table.insert(chunks, "")
 
-  return table.concat(chunks)
+  return table.concat(chunks, "\r\n")
 
 end
 
@@ -326,7 +353,6 @@ end
 http.r = {}
 
 function http.r:new(result)
-  if type(result) ~= "table" then result = table.pack(result) end
   local r = {
     ["result"] = result,
     ["err"] = false
@@ -337,6 +363,10 @@ function http.r:new(result)
 end
 
 function http.r:unwrap()
+  return self.result
+end
+
+function http.r:unpack()
   return table.unpack(self.result)
 end
 
@@ -348,7 +378,7 @@ function http.incoming(client)
   local request = http.read_request(client)
   if request.err then
     print(request.string)
-    return http.build_server_response(request)
+    return http.build_server_response(request.response)
   else request = request:unwrap() end
 
   local response = http.build_response(request)
@@ -362,7 +392,7 @@ function http.read_request(client)
   local request_result = http.read_parse_and_validate_request_line(client)
   local method_token, request_target, protocol_version
   if request_result.err then return request_result
-  else method_token, request_target, protocol_version = request_result:unwrap() end
+  else method_token, request_target, protocol_version = request_result:unpack() end
 
   -- headers are validated later when used
   local parsed_headers = http.read_and_parse_field_lines_until_crlf(client)
@@ -374,17 +404,17 @@ function http.read_request(client)
   if request_target.err then return request_target
   else request_target = request_target:unwrap() end
 
+  if parsed_headers:get("Expect") == "100-continue" then http.send_continue(client) end
+
   local transfer_encoding_header = parsed_headers:get("Transfer-Encoding")
   local content_length_header = parsed_headers:get("Content-Length")
 
-  if parsed_headers:get("Expect") == "100-continue" then http.send_continue(client) end
-
   -- OLD-TODO: handle incomp.ete messages (8)
-  local body = http.read_body(client, transfer_encoding_header, content_length_header)
+  local body = http.read_body(client, transfer_encoding_header)
   if body.err then return body
-  else body, transfer_encoding_header, content_length_header = body.unwrap() end
+  else body, transfer_encoding_header = body:unpack() end
 
-  parsed_headers:append(transfer_encoding_header)
+  if transfer_encoding_header then parsed_headers:append(transfer_encoding_header) end
 
   -- return finished request
   parsed_headers.method_token = method_token
@@ -406,7 +436,7 @@ function http.read_parse_and_validate_request_line(socket)
   local parsed_request_line = http.parse_request_line(raw_request_line)
   local method_token, request_target, protocol_version
   if parsed_request_line.err then return parsed_request_line
-  else method_token, request_target, protocol_version = parsed_request_line:unwrap() end
+  else method_token, request_target, protocol_version = parsed_request_line:unpack() end
 
   if not http.validate_request_tokens(method_token, request_target, protocol_version)
   then return http.e:new(http.response:new_400(true), "[?] WRN in http.read_parse_and_validate_request_line: found malformed request tokens") end
@@ -421,7 +451,8 @@ function http.skip_crlf_and_receive_sanitized(client)
   local count = 0
   local err
 
-  while line == "" do
+  while line == nil or line == "" do
+
     line, err = http.receive_sanitized(client)
     count = count + 1
     if err then
@@ -445,8 +476,9 @@ end
 
 function http.parse_request_line(raw_request_line)
 
-  local CAPTURE <const> = "(.-) (.-) (.-)"
-  local method_token, request_target, protocol_version = string.match(raw_request_line, CAPTURE)
+  local SPLIT_ON_SPACES <const> = "^(.-) (.-) (.-)$"
+  print("reqlkiine", raw_request_line)
+  local method_token, request_target, protocol_version = string.match(raw_request_line, SPLIT_ON_SPACES)
 
   if not method_token or not request_target or not protocol_version then
     return http.e:new(http.response:new_400(true), "[?] WRN in http.parse_request_line: found malformed request line")
@@ -458,10 +490,9 @@ end
 
 function http.validate_request_tokens(method_token, request_target, protocol_version)
 
-  if not string.find(method_token, "^" .. http.abnf.TOKEN .. "$")
-  or not uridecoder.match_http_request_target(request_target)
-  or not string.find(protocol_version, "^" .. http.abnf.HTTP_VERSION .. "$")
-  then return false end
+  return string.find(method_token, "^" .. http.abnf.TOKEN .. "$")
+  and uridecoder.match_http_request_target(request_target)
+  and string.find(protocol_version, "^" .. http.abnf.HTTP_VERSION .. "$")
 
 end
 
@@ -469,13 +500,9 @@ function http.read_and_parse_field_lines_until_crlf(socket)
 
   local raw_headers = http.read_lines_until_crlf(socket, 256)
   if raw_headers.err then return raw_headers
-  else raw_headers = raw_headers.unwrap() end
+  else raw_headers = raw_headers:unwrap() end
 
-  local parsed_headers = http.parse_raw_field_lines(raw_headers)
-  if parsed_headers.err then return parsed_headers
-  else parsed_headers = parsed_headers.unwrap() end
-
-  return parsed_headers
+  return http.parse_raw_field_lines(raw_headers)
 
 end
 
@@ -532,60 +559,59 @@ end
 function http.read_lines_until_crlf(client, max_before_error)
 
   local line, err = http.receive_sanitized(client)
-  if err then return http.e:new(http.response:new_400(true), "[?] WRN in http.read_field_lines_until_crlf: failed to read next field line") end
+  if err then return http.e:new(http.response:new_400(true), "[?] WRN in http.read_field_lines_until_crlf: failed to read first field line") end
 
-  local lines
+  local lines = {}
   local count = 0
-  while not line == "" do
-
+  while not (line == "") do
+    
     table.insert(lines, line)
     line, err = http.receive_sanitized(client)
+    if err then return http.e:new(http.response:new_400(true), "[?] WRN in http.read_field_lines_until_crlf: failed to read next field line") end
 
     if count > max_before_error then return http.e:new(http.response:new_400(true), "[?] WRN in http.read_field_lines_until_crlf: received over max field lines of count " .. max_before_error) end
     count = count + 1
 
   end
 
-  return http.r:new(lines)
+  return http.r:new(lines, true)
 
 end
 
 function http.parse_raw_field_lines(field_lines)
 
-  -- unfold lines
   local unfolded_lines = http.unfold_field_lines(field_lines)
   if unfolded_lines.err then return unfolded_lines else unfolded_lines = unfolded_lines:unwrap() end
 
-  -- parse
-
   local parsed_lines = http.parse_field_lines(unfolded_lines)
-  if parsed_lines.err then return parsed_lines else return parsed_lines:unwrap() end
+  if parsed_lines.err then return parsed_lines else return parsed_lines end
 
 end
 
 function http.unfold_field_lines(field_lines)
 
   local unfolded_lines, buffer = {}, {}
-  local STARTING_WHITESPACE <const> = "^" .. http.abnf.OWS
+  -- match on RWS, so we know that it *is* a folded line
+  local STARTING_WHITESPACE <const> = "^" .. http.abnf.RWS
 
-  for line in field_lines do
+  for _, line in ipairs(field_lines) do
 
     -- check if line should be folded
     if string.find(line, STARTING_WHITESPACE) then
 
-      if buffer == {} then return http.e:new(http.response:new_400(true), "[?] WRN in http.unfold_field_lines: found folded line whilst buffer was empty")
+      if #buffer ~= 0 then return http.e:new(http.response:new_400(true), "[?] WRN in http.unfold_field_lines: found folded line whilst buffer was empty")
       else table.insert(buffer, (string.gsub(line, STARTING_WHITESPACE, " "))) end
     
     else
 
-      if buffer ~= {} then table.insert(unfolded_lines, table.concat(buffer)) end
+      if #buffer ~= 0 then table.insert(unfolded_lines, table.concat(buffer)) end
       buffer = { line }
 
     end
 
   end
 
-  return unfolded_lines
+  return http.r:new(unfolded_lines)
 
 end
 
@@ -593,7 +619,7 @@ function http.parse_field_lines(field_lines)
 
   local parsed_lines = http.field_lines:new()
 
-  for line in field_lines do
+  for _, line in ipairs(field_lines) do
     local parsed_line = http.parse_field_line(line)
     if parsed_line.err then
       return parsed_line
@@ -632,7 +658,7 @@ function http.read_body(socket, transfer_encoding_header, content_length_header)
   local body_info = http.determine_body_info(transfer_encoding_header, content_length_header)
   local decode_method, body_length
   if body_info.err then return body_info
-  else decode_method, body_length = body_info.unwrap() end
+  else decode_method, body_length = body_info:unpack() end
 
   local body
   if decode_method == "Content-Length" then
@@ -647,7 +673,7 @@ function http.read_body(socket, transfer_encoding_header, content_length_header)
     if body.err then return body
     else
       -- discard trailers at this point
-      body, _, body_length = body:unwrap()
+      body, _, body_length = body:unpack()
 
       local transfer_encoding_list = transfer_encoding_header:as_list()
       table.remove(transfer_encoding_list, -1)
@@ -670,13 +696,13 @@ function http.determine_body_info(transfer_encoding, content_length)
 
   local decode_method, body_length
 
-  if transfer_encoding.value ~= nil then
+  if transfer_encoding ~= nil then
 
     if not http.check_all_encodings_recognized(transfer_encoding)
     then return http.e:new(http.response:new(501), "[?] WRN in http.determine_body_info: found unrecognised encoding")
     else return http.r:new(table.pack("Chunked", nil)) end
     
-  elseif content_length.value ~= nil then
+  elseif content_length ~= nil then
 
     -- perform list validity check (6.3)
     local content_length_list = content_length:as_list()
@@ -842,13 +868,6 @@ function http.parse_chunk_ext_name(raw_chunk_header)
 
 end
 
-function http.build_server_response_from_error(request)
-
-  print(request.string)
-  return { ["response"] = request.response, ["flood"] = false, ["close"] = true }
-
-end
-
 function http.build_response(request)
 
   local response_base = http.get_response_base(request)
@@ -953,7 +972,7 @@ end
 function http.build_server_response(response)
 
   http.append_universal_headers(response)
-
+  
   local serialized_response = response:serialize()
 
   return {
