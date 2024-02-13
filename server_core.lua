@@ -123,7 +123,7 @@ function server.read_conf(conf_path)
   local config = {}
   for line in conf:lines() do
 
-      local CAPTURE_EITHER_SIDE_OF_COLON <const> = "([^%:]*)%:(.*)"
+      local CAPTURE_EITHER_SIDE_OF_COLON <const> = "([^%:]*)%: ?(.*)"
       local recipient_and_key, value = string.match(line, CAPTURE_EITHER_SIDE_OF_COLON)
       
       local SPLIT_ON_DOT <const> = "^(.-)%.(.*)$"

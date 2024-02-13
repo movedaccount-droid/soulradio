@@ -72,7 +72,10 @@ websocket.read_message_from_socket = function(socket)
 
     local err = nil
 
-    local fin_rsv = websocket.parse_fin_rsv_from_raw(socket:receive(1))
+    local raw_fin_rsv, err = socket:receive(1)
+    if err then return print(err) end
+
+    local fin_rsv = websocket.parse_fin_rsv_from_raw()
     local opcode = websocket.parse_opcode_from_raw(socket:receive(1))
 
     local masked_payload_length = websocket.parse_masked_payload_length_from_raw(socket:receive(2))

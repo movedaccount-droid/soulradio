@@ -252,8 +252,6 @@ end
 
 function http.response:serialize()
 
-  print("body length", self.body:len())
-
   -- set encoding early so we have headers ready for later
   if self.body then
     self:set_body_encoding()
@@ -263,11 +261,15 @@ function http.response:serialize()
 
   table.insert(serialized_pieces, self:serialize_response_line())
   table.insert(serialized_pieces, self:serialize_field_lines())
+  table.insert(serialized_pieces, "")
 
   if self.body then
-    table.insert(serialized_pieces, "")
     table.insert(serialized_pieces, self:serialize_body())
+  else
+    table.insert(serialized_pieces, "")
   end
+
+  dp(self)
 
   return table.concat(serialized_pieces, "\r\n")
 
@@ -331,6 +333,7 @@ function http.response:serialize_body_chunked()
 
   -- tail blank chunk of length 0
   table.insert(chunks, "0")
+  table.insert(chunks, "")
   table.insert(chunks, "")
 
   return table.concat(chunks, "\r\n")
@@ -907,13 +910,14 @@ end
 
 function http.is_websocket_upgrade(upgrade_header)
 
-  return upgrade_header ~= nil
-  and string.lower(upgrade_header.value) == "websocket"
+  if not upgrade_header then return false end
+
+  return string.lower(upgrade_header.value) == "websocket"
 
 end
 
 function http.build_websocket_response(protocol_version, host_header, sec_websocket_key_header, sec_websocket_version_header)
-  
+
   if protocol_version ~= "HTTP/1.1"
   or host_header == nil
   or sec_websocket_version_header == nil
@@ -936,15 +940,23 @@ function http.build_websocket_response(protocol_version, host_header, sec_websoc
   end
 
   -- TODO: resource names, extensions, subprotocols. we do not necessarily have to  do this for our task
-  return http.r:new(http.response:new(
+  return http.response:new(
     101,
     http.field_lines:new({
       ["Upgrade"] = "websocket",
       ["Connection"] = "Upgrade",
       ["Sec-WebSocket-Accept"] = http.calculate_sec_websocket_accept(sec_websocket_key_header.value)
     }),
-    nil, false, true
-  ))
+    nil, false, "websocket"
+  )
+
+end
+
+function http.calculate_sec_websocket_accept(sec_websocket_key_header)
+
+  local NOTHING_UP_MY_SLEEVE_UUID <const> = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+    
+  return base64.encode(sha1.calculate(sec_websocket_key_header .. NOTHING_UP_MY_SLEEVE_UUID))
 
 end
 
