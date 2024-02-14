@@ -6,13 +6,6 @@ require "sha1"
 
 http = {}
 
-function dp(t)
-  print("printing table: ", t)
-  for k, v in pairs(t) do
-    print(k, v)
-  end
-end
-
 -- http.abnf: various rfc abnf matchers
 http.abnf = {
   ["HTAB"] = "	",
@@ -268,8 +261,6 @@ function http.response:serialize()
   else
     table.insert(serialized_pieces, "")
   end
-
-  dp(self)
 
   return table.concat(serialized_pieces, "\r\n")
 
@@ -952,11 +943,13 @@ function http.build_websocket_response(protocol_version, host_header, sec_websoc
 
 end
 
-function http.calculate_sec_websocket_accept(sec_websocket_key_header)
+function http.calculate_sec_websocket_accept(sec_websocket_key_value)
 
   local NOTHING_UP_MY_SLEEVE_UUID <const> = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+  print("concat value", sec_websocket_key_value .. NOTHING_UP_MY_SLEEVE_UUID)
+  print("hashed value", sha1.calculate(sec_websocket_key_value .. NOTHING_UP_MY_SLEEVE_UUID))
     
-  return base64.encode(sha1.calculate(sec_websocket_key_header .. NOTHING_UP_MY_SLEEVE_UUID))
+  return base64.encode(sha1.calculate(sec_websocket_key_value .. NOTHING_UP_MY_SLEEVE_UUID))
 
 end
 
@@ -1005,10 +998,14 @@ function http.append_universal_headers(response)
   response:append(http.field_line:new("Server", "lua-server-lplp/1.0"))
 
   -- suggests server can provide chunked
-  response:append(http.field_line:new("Transfer-Encoding", ""))
+  if not response:get("Transfer-Encoding") then
+    response:append(http.field_line:new("Transfer-Encoding", ""))
+  end
 
   -- suggests server is keeping connection alive
-  response:append(http.field_line:new("Connection", ""))
+  if not response:get("Connection") then
+    response:append(http.field_line:new("Connection", ""))
+  end
 
   if http_backend.consts.implemented.range_requests then
     response:append(http.field_line:new("Accept-Ranges", "bytes"))
