@@ -30,8 +30,6 @@ function waitForSocketConnection(socket, callback){
         }, 5); // wait 5 milisecond for the connection...
 }
 
-sendMessage("patio parasols pitiful to any body bodied")
-
 function GSFReceiveChatMessage(messages) {
     for (let message of messages) {
         const chat_element = document.createElement("p");

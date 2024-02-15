@@ -7,36 +7,40 @@
 
 package.path = "../?.lua;" .. package.path
 
-require "http"
-require "websocket"
-
 local socket = require("socket")
 local ltn12 = require("ltn12")
 
-server = {}
+if not server then server = {} end
 server.connections = {}
+server.connection_protocol_lookup = {}
+server.default_protocol_lookup = {}
 
-function server.accept_connection(open_server)
+function server.incoming(open_server)
 
   print("[.] accepting new client connection")
   local connection = open_server:accept()
-  -- TODO: move config parsing
   connection:settimeout(server.config.timeout)
   connection:setoption('keepalive', true)
   table.insert(server.connections, connection)
   -- TODO: configurable default
-  server.connection_protocol_lookup[connection] = "http"
+  server.connection_protocol_lookup[connection] = server.default_protocol_lookup[open_server]
 
 end
 
 -- TODO: implement 9.5 graceful timeouts
 
-function server.open_server(host, port)
+function server.open_server(host, port, default_protocol)
 
   print("[.] opening server on port " .. port)
   local opened_server, err = socket.bind(host, port)
 
   opened_server:settimeout(server.config.timeout)
+
+  if err then return nil, err end
+
+  table.insert(server.connections, opened_server)
+  server.connection_protocol_lookup[opened_server] = "server"
+  server.default_protocol_lookup[opened_server] = default_protocol
 
   return opened_server, err
 
@@ -78,6 +82,8 @@ end
 -- handles the main response from a backend
 function server.handle_response(client, response)
 
+  if not response then return end
+
   if response.upgrade then
     server.connection_protocol_lookup[client] = response.upgrade
   end
@@ -114,7 +120,8 @@ function server.read_conf(conf_path)
   
   local read_as_number_lookup = {
     ["timeout"] = true,
-    ["garbage_collection_cycle"] = true
+    ["garbage_collection_cycle"] = true,
+    ["port"] = true,
   }
 
   local conf, err = io.open(conf_path, "r")
@@ -148,6 +155,7 @@ end
 function server.distribute_conf(conf)
 
   for k, v in pairs(conf) do
+    if _ENV[k] == nil then _ENV[k] = {} end
     _ENV[k].config = v
   end
 
@@ -157,13 +165,12 @@ end
 local config, err = server.read_conf("./lua-server-lplp.conf")
 assert(not err, err)
 server.distribute_conf(config)
-
--- setup main server loop
-local opened_server, err = server.open_server("0.0.0.0", 8080)
-assert(server, "[!] ERR in server main loop: could not open server: " .. tostring(err))
-server.connections = { opened_server }
-server.connection_protocol_lookup = { [opened_server] = "server" }
 local garbage_collection_countdown = server.config.garbage_collection_cycle
+
+-- import extensions
+require "http"
+require "websocket"
+require "liquidsoap"
 
 while 1 do
 
@@ -171,7 +178,7 @@ while 1 do
   print("waiting to read...")
 
   -- TODO: this needs to timeout eventually
-  local readable_sockets, _, err = socket.select(server.connections)
+  local readable_sockets, _, err = socket.select(server.connections, server.timeout)
 
   if err then
     print("[?] WRN in server main loop: socket selection reported error: " .. err)
@@ -181,14 +188,9 @@ while 1 do
   for _, connection in ipairs(readable_sockets) do
     local protocol = server.connection_protocol_lookup[connection]
     local response
-    -- TODO: this should just be a callk to env.
-    -- websocket can reutrn nil so handle_repsonse also should do thathanlde it whatever
-    if protocol == "server" then
-      server.accept_connection(connection)
-    else
-      response = _ENV[protocol].incoming(connection)
-      server.handle_response(connection, response)
-    end
+    -- ex. server.incoming, websocket.incoming
+    response = _ENV[protocol].incoming(connection)
+    server.handle_response(connection, response)
   end
 
   garbage_collection_countdown = garbage_collection_countdown - 1

@@ -1,4 +1,4 @@
-sha1 = {}
+if not sha1 then sha1 = {} end
 
 -- referenced:
 -- this existing much faster implementation [for string -> u32 conversion particularly]

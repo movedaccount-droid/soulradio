@@ -1,6 +1,9 @@
-websocket_backend = {}
+if not websocket_backend then websocket_backend = {} end
 
 local socket = require("socket")
+
+websocket_backend.queue = {}
+websocket_backend.now_playing = "./www/img/audio.ogg"
 
 websocket_backend.handle_text = function(message)
 
@@ -56,7 +59,7 @@ websocket_backend.handle_chat = function(request)
     request.index = request.index + 1
 
     while not websocket_backend.is_end(request) do
-        table.insert(response_area, request.lines[request.index], 2)
+        table.insert(response_area, 2, request.lines[request.index])
         request.index = request.index + 1
     end
 
@@ -64,15 +67,23 @@ websocket_backend.handle_chat = function(request)
 
 end
 
+websocket_backend.next_track = function()
+
+    websocket_backend.now_playing = table.remove(websocket_backend.queue, 1)
+    
+    if websocket_backend.now_playing ~= nil then
+        return websocket_backend.now_playing
+    else
+        return "./www/img/audio.ogg"
+    end
+
+end
+
 websocket_backend.handle_now_playing = function(request)
 
     request = websocket_backend.skip_to_end(request)
 
-    local np_file = io.open("./now_playing.txt", "r")
-    local np = np_file:read("a")
-    np_file:close()
-
-    return request, "CHAT\r\n" .. np .. "\r\nEND", false
+    return request, "CHAT\r\n" .. websocket.now_playing .. "\r\nEND", false
 
 end
 
@@ -89,11 +100,3 @@ websocket_backend.handle_binary = function(message)
     return { ["response"] = response, ["flood"] = false, ["close"] = false }
 
 end
-
-local port = 8081
-print("[.] opening liquidsoap telnet server on port " .. port)
-local err
-websocket_backend.socket, err = socket.bind("0.0.0.0", port)
-assert(websocket_backend.socket, "[!] ERR in websocket_backend init: could not open telnet server: " .. tostring(err))
-websocket_backend.client, err = websocket_backend.socket:connect("0.0.0.0", 1234)
-assert(websocket_backend.client, "[!] ERR in websocket_backend init: could not open telnet client: " .. tostring(err))

@@ -1,4 +1,4 @@
-base64 = {}
+if not base64 then base64 = {} end
 
 base64.get_char = function(code)
     if code < 26 then return string.char(code + 65)

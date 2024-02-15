@@ -1,6 +1,6 @@
 -- http_backend: http backend handler for lua-server-lplp
 
-http_backend = {}
+if not http_backend then http_backend = {} end
 
 -- http_backend.consts: universal constants
 http_backend.consts = {}

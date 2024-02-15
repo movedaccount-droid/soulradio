@@ -1,7 +1,6 @@
 -- websocket: websocket message handler for lua-server-lplp
-require "websocket_backend"
 
-websocket = {}
+if not websocket then websocket = {} end
 
 count = 1
 
@@ -495,6 +494,8 @@ tests["parse_fin_rsv_from_raw_1001"] = function()
 
     return true
 end
+
+require "websocket_backend"
 
 -- local successes, failures = 0, 0
 

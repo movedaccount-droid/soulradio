@@ -4,7 +4,7 @@ require "http_backend"
 require "base64"
 require "sha1"
 
-http = {}
+if not http then http = {} end
 
 -- http.abnf: various rfc abnf matchers
 http.abnf = {
@@ -1013,3 +1013,6 @@ function http.append_universal_headers(response)
 
 end
 
+-- start server
+local _, err = server.open_server("0.0.0.0", http.config.port, "http")
+assert(not err, "[!] ERR in http init sequence: could not open server: " .. tostring(err))

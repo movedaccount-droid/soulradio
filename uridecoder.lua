@@ -1,4 +1,4 @@
-uridecoder = {}
+if not uridecoder then uridecoder = {} end
 
 local SCHEME <const> = "%a[%a%d%+%-%.]*"
 local UNRESERVED <const> = "a-zA-Z0-9%-%.%_%~"
