@@ -7,15 +7,16 @@ websocket_backend.now_playing = "./www/img/audio.ogg"
 
 websocket_backend.handle_text = function(message)
 
-    local request = { ["lines"] = {}, ["index"] = 0 }
+    local request = { ["lines"] = {}, ["index"] = 1 }
     local MATCH_BETWEEN_NEWLINES <const> = "[^\r\n]+"
     for line in string.gmatch(message.unmasked_payload_data, MATCH_BETWEEN_NEWLINES) do
         table.insert(request.lines, line)
     end
 
     local AREAS = {
-        ["CHAT"] = websocket_backend.handle_chat(request),
-        ["NOW_PLAYING"] = websocket_backend.handle_now_playing(request)
+        ["CHAT"] = websocket_backend.handle_chat,
+        ["DIR"] = websocket_backend.handle_dir,
+        ["NOW_PLAYING"] = websocket_backend.handle_now_playing
     }
 
     local response_payload = {}
@@ -25,10 +26,10 @@ websocket_backend.handle_text = function(message)
     while request.index < #request.lines do
         request, response_area, should_flood = AREAS[request.lines[request.index]](request)
         if should_flood then any_should_flood = true end
-        table.insert(response_payload, response_area)
+        if response_area then table.insert(response_payload, response_area) end
     end
 
-    local should_flood
+    print("response: ", table.concat(response_payload, "\r\n"))
 
     local response = {
         ["opcode"] = "TEXT_FRAME",
@@ -66,6 +67,39 @@ websocket_backend.handle_chat = function(request)
     return request, table.concat(response_area, "\r\n"), true
 
 end
+
+websocket_backend.handle_dir = function(request)
+
+    local response_area = { "DIR", "END" }
+    request.index = request.index + 1
+    local requested_dir = request.lines[request.index]
+
+    local CONTAINS_TRAVERSAL <const> = "%.%."
+    if string.find(requested_dir, CONTAINS_TRAVERSAL) then return websocket_backend.skip_to_end(request), nil, false end
+
+    local POP_ON_FINAL_SLASH <const> = "/(.-)$"
+    local file = string.match(requested_dir, POP_ON_FINAL_SLASH)
+    if not file then file = requested_dir end
+
+    local IS_FILE <const> = "%."
+    if string.find(file, IS_FILE) then
+        -- TODO: add toe queue adn flood quue update
+    else
+        for dir in websocket_backend.generate_dir(requested_dir) do
+            table.insert(response_area, 2, dir)
+        end
+        table.insert(response_area, 2, requested_dir)
+        return websocket_backend.skip_to_end(request), table.concat(response_area, "\r\n"), false
+    end
+        
+end
+
+websocket_backend.generate_dir = function(dir)
+
+    return io.popen("ls -p " .. websocket_backend.config.music_dir .. dir):lines()
+
+end
+
 
 websocket_backend.next_track = function()
 
