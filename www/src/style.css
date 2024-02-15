@@ -1,3 +1,36 @@
-p {
-    color: purple;
+body {
+    background-color: #000000;
+}
+
+#container {
+    max-width: 300px;
+}
+
+#player-container {
+    background-color: #F12312;
+    max-width: 300px;
+    overflow: auto;
+}
+
+#file-explorer {
+    background-color: #989999;
+    max-width: 300px;
+    overflow: auto;
+}
+
+#queue {
+    background-color: #227788;
+    max-width: 300px;
+    overflow: auto;
+}
+
+#chat {
+    background-color: #992233;
+    max-width: 300px;
+    height: 300px;
+    overflow: auto;
+}
+
+.chat-message {
+    background-color: #659065;
 }

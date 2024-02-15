@@ -8,18 +8,34 @@
         <script src="//vjs.zencdn.net/7.10.2/video.min.js"></script>
     </head>
     <body>
-        <h1>header</h1>
-        <p>paragraph</p>
-        <img src="img/img.jpg"></img>
-        <video src="stream/stream.m3u8" height="300" width="400"></video>
-        <video-js id=vid1 width=600 height=300 class="vjs-default-skin" controls>
-            <source
-               src="stream/stream.m3u8"
-               type="application/x-mpegURL">
-          </video-js>
-        <script>
-        var player = videojs('vid1');
-        player.play();
-        </script>
+        <div id="container">
+            <div id="player-container">
+                <video-js id=vid1 width=300 height=80 class="vjs-default-skin" controls>
+                    <source
+                       src="stream/stream.m3u8"
+                       type="application/x-mpegURL">
+                  </video-js>
+                <script>
+                var player = videojs('vid1');
+                player.play();
+                </script>
+            </div>
+            <div id="file-explorer">
+                <p>helelo</p>
+            </div>
+            <div id="queue">
+                <p>test</p>
+            </div>
+            <div id="chat">
+                <p class="chat-message">message: patio parasols pitiful to any body bodied</p>
+            </div>
+            <div id="chat-entry">
+                <form onsubmit="GSFSendChatMessage();return false">
+                    <input type="text" id="chat-textarea" name="chat-textarea" placeholder="type to chat..."></input>
+                    <button type="submit">send</button>
+                </form>
+            </div>
+        </div>
+
     </body>
 </html>

@@ -3,7 +3,7 @@ alert("test");
 let ws = new WebSocket("ws://10.0.0.33:8080/testingurlresponse")
 
 ws.onmessage = function(event) {
-    alert("message: " + event.data)
+    GSFReceiveChatMessage(["message: " + event.data])
 }
 
 function sendMessage(msg){
@@ -30,4 +30,18 @@ function waitForSocketConnection(socket, callback){
         }, 5); // wait 5 milisecond for the connection...
 }
 
-sendMessage("")
+sendMessage("patio parasols pitiful to any body bodied")
+
+function GSFReceiveChatMessage(messages) {
+    for (let message of messages) {
+        const chat_element = document.createElement("p");
+        chat_element.innerText = message;
+        chat_element.classList.add("chat-message");
+        document.getElementById("chat").appendChild(chat_element);
+    }
+}
+
+function GSFSendChatMessage() {
+    sendMessage(document.getElementById("chat-textarea").value);
+    document.getElementById("chat-textarea").value = "";
+}

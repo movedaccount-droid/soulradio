@@ -100,6 +100,7 @@ sha1.calculate = function(message)
         table.insert(output, chars)
     end
 
+    -- uncomment for tests
     -- return string.format("%08x%08x%08x%08x%08x", h0, h1, h2, h3, h4)
     return table.concat(output)
 
