@@ -96,10 +96,7 @@ websocket.incoming = function(socket)
         if not incoming then return nil end
     end
 
-    local outgoing, err = websocket.generate_response(incoming)
-    if err then return websocket.fail_connection(err) end
-
-    return outgoing
+    return websocket.generate_response(incoming)
 
 end
 
@@ -110,7 +107,7 @@ websocket.read_message = function(socket)
     if not raw_message or err then return nil, err end
 
     local valid, err = websocket.validate_message(raw_message)
-    if not valid then return nil, err end
+    if not valid or err then return nil, err end
 
     if raw_message.payload_data then
         raw_message.unmasked_payload_data = websocket.unmask_payload_data(raw_message.payload_data, raw_message.masking_key)
@@ -128,8 +125,7 @@ websocket.read_message_from_socket = function(socket)
 
     local raw_fin_rsv, raw_opcode
     local raw_fin_rsv_opcode, err = socket:receive(1)
-    -- TODO: tjs is fucked
-    if err then return print(err)
+    if err then return nil, { ["error"] = "[?] in websocket.read_message_from_socket: could not read raw_fin_rsv: " .. err , ["status_code"] = 1002 }
     else raw_fin_rsv, raw_opcode = websocket.split_char_to_four_bits(raw_fin_rsv_opcode) end
 
     local fin_rsv = websocket.parse_fin_rsv_from_raw(raw_fin_rsv)
@@ -141,7 +137,7 @@ websocket.read_message_from_socket = function(socket)
         masked_payload_length.payload_length = websocket.read_u16_from_socket(socket)
     elseif masked_payload_length.payload_length == 127 then
         masked_payload_length.payload_length = websocket.read_u64_from_socket(socket)
-        if masked_payload_length.payload_length > 9223372036854775807 then return err, "[?] WRN in websocket.read_message_from_socket: received length too long" end
+        if masked_payload_length.payload_length > 9223372036854775807 then return nil, { ["error"] = "[?] WRN in websocket.read_message_from_socket: received length too long" , ["status_code"] = 1009 } end
     end
 
     local masking_key = socket:receive(4)
@@ -237,11 +233,11 @@ websocket.validate_message = function(raw_message)
 
     -- 5.2: if a non-zero value is received... fail the websocket connection
     if not raw_message.rsv1 == 0 or not raw_message.rsv2 == 0 or not raw_message.rsv2 == 0 then
-        return false, { ["error"] = "[!] ERR: rsv values should be 0", ["status_code"] = TEMP_CODE }
+        return false, { ["error"] = "[!] ERR: rsv values should be 0", ["status_code"] = 1002 }
     end
 
     -- 5.2: if an unknown opcode is received... fail the websocket connection
-    if raw_message.opcode == "RESERVED" then return false, { ["error"] = "[!] ERR: unrecognized opcode", ["status_code"] = TEMP_CODE } end
+    if raw_message.opcode == "RESERVED" then return false, { ["error"] = "[!] ERR: unrecognized opcode", ["status_code"] = 1002 } end
 
     -- 5.3: a masked frame MUST have the field frame-masked set to 1
     if not raw_message.masked then return false, { ["error"] = "[!] ERR: client messages was not marked as masked", ["status_code"] = 1002 } end
@@ -393,8 +389,7 @@ websocket.fail_connection = function(err)
         status_code = err.status_code
     else
         error_string = "[!] ERR: unknown error"
-        -- TODO: checkl this
-        status_code = 1000
+        status_code = 1002
     end
 
     print("[?] failing ws connection: " .. error_string)

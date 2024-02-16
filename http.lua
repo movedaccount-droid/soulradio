@@ -246,9 +246,7 @@ end
 function http.response:serialize()
 
   -- set encoding early so we have headers ready for later
-  if self.body then
-    self:set_body_encoding()
-  end
+  self:set_body_encoding()
 
   local serialized_pieces = {}
 
@@ -268,7 +266,9 @@ end
 
 function http.response:set_body_encoding()
 
-  if string.len(self.body) > 1024 then
+  if not self.body then
+    self:append(http.field_line:new("Content-Length", 0))
+  elseif string.len(self.body) > 1024 then
     self:append(http.field_line:new("Transfer-Encoding", "chunked"))
   else
     self:append(http.field_line:new("Content-Length", string.len(self.body)))
@@ -444,6 +444,9 @@ function http.skip_crlf_and_receive_sanitized(client)
   local line = http.receive_sanitized(client)
   local count = 0
   local err
+  if err then
+    return http.e:new(http.response:new_400(true), "[?] WRN in http.skip_crlf_and_receive_sanitized: err during skipping crlf: " .. err)
+  end
 
   while line == nil or line == "" do
 

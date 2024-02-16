@@ -10,7 +10,7 @@
     <body>
         <div id="container">
             <div id="player-container">
-                <!-- <video-js id=vid1 width=300 height=80 class="vjs-default-skin" controls>
+                <video-js id=vid1 width=300 height=80 class="vjs-default-skin" controls>
                     <source
                        src="stream/stream.m3u8"
                        type="application/x-mpegURL">
@@ -18,21 +18,31 @@
                 <script>
                 var player = videojs('vid1');
                 player.play();
-                </script> -->
+                </script>
+            </div>
+            <div class="right-container">
+                <button class="basic-button" onclick="GSFSendSkip()">skip</button>
+            </div>
+            <div class="now-playing-container">
+                <div id="now-playing" class="left-container">
+                    <p class="now-playing-text">loading...</p>
+                </div>
+                <div id="queue">
+                </div>
             </div>
             <div id="file-explorer">
-                <p>helelo</p>
-            </div>
-            <div id="queue">
-                <p>test</p>
             </div>
             <div id="chat">
-                <p class="chat-message">message: patio parasols pitiful to any body bodied</p>
+                <p class="info-message">use /nick [nickname] to change nickname...</p>
             </div>
             <div id="chat-entry">
                 <form onsubmit="GSFSendChatMessage();return false">
-                    <input type="text" id="chat-textarea" name="chat-textarea" placeholder="type to chat..."></input>
-                    <button type="submit">send</button>
+                    <div class="right-container">
+                        <button type="submit" class="basic-button">send</button>
+                    </div>
+                    <div class="left-container">
+                        <input type="text" id="chat-textarea" name="chat-textarea" placeholder="type to chat..."></input>
+                    </div>
                 </form>
             </div>
         </div>

@@ -33,7 +33,6 @@ function server.open_server(host, port, default_protocol)
 
   print("[.] opening server on port " .. port)
   local opened_server, err = socket.bind(host, port)
-
   opened_server:settimeout(server.config.timeout)
 
   if err then return nil, err end
@@ -65,12 +64,12 @@ function server.clean_connections()
 
   print("[.] cleaning connections...")
 
-  for i, connection in ipairs(server.connections) do
+  for _, connection in ipairs(server.connections) do
 
-    if not server.connection_protocol_lookup[connect] == "server" then
+    if not (server.connection_protocol_lookup[connection] == "server") then
       local _, err = connection:receive(0)
-      if err then 
-        print("[.] cleaning connection due to unnoticed closure")
+      if err == "closed" then 
+        print("[.] cleaning connection due to unnoticed closure: " .. err) 
         server.close_connection(connection)
       end
     end
@@ -99,16 +98,21 @@ end
 -- handles any additional mid-process oneshot responses a backend wishes to send
 function server.oneshot(client, response)
 
-  local source = ltn12.source.string(response.response)
-  local sink, err
+  local source, sink, err
 
   if response.flood then
-    for _, s in server.connections do
-      sink = socket.sink("keep-open", s)
-      _, err = ltn12.pump.all(source, sink)
-      if err then print("[.] could not flood response to client...") end
+    for _, s in ipairs(server.connections) do
+
+      if server.connection_protocol_lookup[s] == server.connection_protocol_lookup[client] then
+        source = ltn12.source.string(response.response)
+        sink = socket.sink("keep-open", s)
+        _, err = ltn12.pump.all(source, sink)
+        if err then print("[.] could not flood response to client...") end
+      end
+
     end
   else
+    source = ltn12.source.string(response.response)
     sink = socket.sink("keep-open", client)
     _, err = ltn12.pump.all(source, sink)
     if err then print("[?] WRN in server.handle_response: could not send response to client") end
@@ -175,29 +179,26 @@ require "liquidsoap"
 while 1 do
 
   ::continue::
-  print("waiting to read...")
 
-  -- TODO: this needs to timeout eventually
-  local readable_sockets, _, err = socket.select(server.connections, server.timeout)
-
-  if err then
-    print("[?] WRN in server main loop: socket selection reported error: " .. err)
-    goto continue
-  end
-  
-  for _, connection in ipairs(readable_sockets) do
-    local protocol = server.connection_protocol_lookup[connection]
-    local response
-    -- ex. server.incoming, websocket.incoming
-    response = _ENV[protocol].incoming(connection)
-    server.handle_response(connection, response)
-  end
+  local readable_sockets, _, err = socket.select(server.connections, nil, server.config.timeout)
 
   garbage_collection_countdown = garbage_collection_countdown - 1
 
   if garbage_collection_countdown == 0 then
     server.clean_connections()
     garbage_collection_countdown = server.config.garbage_collection_cycle
+  end
+
+  if err then
+    -- timed out, no connections to handle
+    goto continue
+  end
+  
+  for _, connection in ipairs(readable_sockets) do
+    local protocol = server.connection_protocol_lookup[connection]
+        -- ex. server.incoming, websocket.incoming
+    local response = _ENV[protocol].incoming(connection)
+    server.handle_response(connection, response)
   end
 
 end
